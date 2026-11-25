@@ -1,38 +1,35 @@
-# NOTICE — 権利と由来について
+# NOTICE - Attribution and Provenance
 
-このリポジトリの権利関係は、コードの由来によって 2 つに分かれます。
-以下のとおりで、ライセンスを付与する立場にない部分があります。
+Rights to this repository are divided into two parts based on code provenance.
+Certain components originate externally, and the maintainer is not in a position to grant a license for them.
 
-## 1. 由来するコード（ライセンスを付与できません）
+## 1. Derived / Upstream Code (No License Granted)
 
-`scripts/ultra0.py`、`scripts/ultra0-17.py`、`agent/`、`scripts/query_sku.py`、
-`scripts/setup_env_frida16.py`、`windows/` 配下は、第三者が公開した実装を引き継いだものです。
+`scripts/ultra0.py`, `scripts/ultra0-17.py`, `agent/`, `scripts/query_sku.py`, `scripts/setup_env_frida16.py`, and everything under `windows/` are derived from or adapted from third-party public implementations.
 
-- 元の実装には**ライセンス表記がありません**（SPDX 識別子・LICENSE ファイルともに無し）。
-- そのため、このリポジトリの保守者は**これらのコードについて著作権を主張せず、
-  利用許諾も付与しません**。保守者には許諾する権限がないためです。
-- 利用する場合は、元の実装の条件と、適用される法令・利用規約を**利用者自身で確認**してください。
+- The original release includes **no license notice** (no SPDX identifier and no `LICENSE` file).
+- Accordingly, the maintainer of this repository **claims no copyright and grants no license** over those files, lacking the authority to do so.
+- If you use these files, you are responsible for verifying the original author's terms as well as applicable laws and platform terms of service.
 
-## 2. このリポジトリで新たに書いたコード（CC0 1.0）
+## 2. Original Code Written for This Repository (CC0 1.0)
 
-以下はこのリポジトリで新規に書いたもので、**CC0 1.0 Universal（パブリックドメイン）**
-として提供します。権利を主張しません。
+The following files were newly written for this repository and are dedicated to the public domain under **CC0 1.0 Universal**, with all rights waived:
 
-- `scripts/sku_scanner.py`、`scripts/sku_scanner_core.py`
-- `scripts/combo.py`、`scripts/combo_core.py`
-- `scripts/build_agent.py`、`scripts/apply_bridge_patch.py`
-- `scripts/run.sh`、`scripts/setup.sh`、`scripts/fix_frida.sh`（新規に書き起こした部分）
-- `tests/` 配下のすべて
-- `README.md`、`DISCLAIMER.md`、`SECURITY.md`、`NOTICE.md`、`docs/` 配下の文書
+- `scripts/sku_scanner.py`, `scripts/sku_scanner_core.py`
+- `scripts/combo.py`, `scripts/combo_core.py`
+- `scripts/build_agent.py`, `scripts/apply_bridge_patch.py`
+- `scripts/run.sh`, `scripts/setup.sh`, `scripts/fix_frida.sh` (newly authored portions)
+- Everything under `tests/`
+- `README.md`, `DISCLAIMER.md`, `SECURITY.md`, `NOTICE.md`, and all files under `docs/`
 
-CC0 1.0 の全文: <https://creativecommons.org/publicdomain/zero/1.0/legalcode>
+Full text of CC0 1.0: <https://creativecommons.org/publicdomain/zero/1.0/legalcode>
 
-## 3. 免責
+## 3. Disclaimer
 
-いずれの部分も**無保証**です。利用によって生じた損害について、保守者は責任を負いません。
-詳しくは [DISCLAIMER.md](DISCLAIMER.md) を参照してください。
+All parts of this repository are provided **without warranty**. The maintainer assumes no liability for any damages resulting from use.
+See [DISCLAIMER.md](DISCLAIMER.md) for details.
 
-## 4. 削除の依頼
+## 4. Takedown Requests
 
-由来するコードについて権利上の問題がある場合は、GitHub の Issue で連絡してください。
-確認のうえ、該当部分の削除または差し替えを行います。
+If you believe any derived component raises a rights or copyright concern, please open a GitHub issue.
+Upon verification, the relevant files will be removed or replaced.

@@ -1,63 +1,60 @@
-# トラブルシューティング
+# Troubleshooting
 
-実際に踏んだエラーを中心にまとめています。
+Summary of observed errors and symptom-based fixes.
 
-## 環境・接続
+## Environment & Connection
 
-### `没有检测到设备` / `adb devices` が空
+### No device detected / `adb devices` is empty
 
-- USB デバッグの許可ダイアログを端末で押したか
-- ケーブルが充電専用でないか
-- ハブ経由だと不安定なことがある → 直挿し、または Wi-Fi ADB:
+- Confirm you accepted the USB debugging authorization prompt on the device
+- Make sure the USB cable supports data (not charge-only)
+- USB hubs can be unstable -> plug directly into the host or use Wi-Fi ADB:
   ```bash
   adb tcpip 5555
-  adb connect <端末IP>:5555
+  adb connect <device-ip>:5555
   ```
 
-### `设备没有 root 权限`
+### Device does not have root privileges
 
-- KernelSU / Magisk / APatch のいずれかが必要
-- `adb shell id` が `uid=0` か確認
-- エミュレータなら「ROOT 権限」を ON にして再起動、または `adb root`
+- Requires KernelSU, Magisk, or APatch
+- Check that `adb shell id` returns `uid=0`
+- On emulators, enable "ROOT permission" and restart, or run `adb root`
 
-### 端末がブートアニメーションで止まる（実機）
+### Device stuck on boot animation (physical devices)
 
-Frida を長時間/連続で動かした後に入ることがありました。
+Observed occasionally after long or repeated Frida sessions:
 
-1. 電源 10 秒長押しで強制再起動
-2. それでもループする場合: 電源 + 音量下げ で fastboot → Start
-3. セーフモード（Google ロゴで音量下げ長押し）でモジュールを無効化して復帰
+1. Force reboot by holding the Power button for 10 seconds
+2. If still looping: hold Power + Volume Down to enter fastboot -> Start
+3. Boot into Safe Mode (hold Volume Down at the Google logo) and disable modules to recover
 
-サブスク状態はサーバー側に残るので、購入済みなら失われません。
+Subscription state is stored server-side, so claimed extensions are not lost.
 
 ## Frida
 
 ### `unable to communicate with remote frida-server; please ensure that major versions match`
 
-client と端末側 frida-server のメジャー不一致。
+Client and device `frida-server` have a major-version mismatch.
 
 ```bash
 ./scripts/run.sh fix-frida
 ```
 
-`/data/local/tmp/frida-server` を退避します。次回実行時に 17.22.2 を自動取得します。
-`magisk-frida` モジュールが常駐している場合は、その `bin/frida-server` を 17.x に
-差し替えるか、モジュールを無効化してください。
+This moves `/data/local/tmp/frida-server` aside so the next run downloads `17.22.2` automatically.
+If a `magisk-frida` module is resident, replace its `bin/frida-server` with 17.x or disable the module.
 
 ### `malformed package`
 
-`Script.create_script()` に渡すバンドルが Frida の `esm` 形式になっている。
-`scripts/build_agent.py` は `bundle_format="iife"` を使います。再ビルドしてください。
+The bundle passed to `Script.create_script()` was built in Frida's `esm` format.
+`scripts/build_agent.py` must use `bundle_format="iife"`; rebuild the agent.
 
 ### `ReferenceError: 'Java' is not defined`
 
-frida 17 は Java bridge を同梱しません。`agent/agent.iife.js`（bridge 同梱）を使ってください。
-`agent/agent.js` を直接注入していないか確認。
+frida 17 does not bundle the Java bridge. Use `agent/agent.iife.js` (with bridge bundled) rather than injecting `agent/agent.js` directly.
 
-### 注入後に何も起きない（`boot_start` だけ出て止まる）
+### Nothing happens after injection (stalls right after `boot_start`)
 
-Android 16 の `Java.registerClass` ハング。`agent/injected.js` の各 `Java.registerClass` に
-`skipInterfaceExpansion: true` を付けてエージェントを再ビルドしてください。
+Android 16 `Java.registerClass` hang. Ensure every `Java.registerClass` call in `agent/injected.js` includes `skipInterfaceExpansion: true`, then rebuild the agent.
 
 ### `Writable dex file '/data/local/tmp/module_521.apk' is not allowed.`
 
@@ -65,47 +62,44 @@ Android 16 の `Java.registerClass` ハング。`agent/injected.js` の各 `Java
 adb shell chmod 444 /data/local/tmp/module_521.apk
 ```
 
-`ultra0-17.py` は push 後に自動で実行します。手動で push した場合は個別に。
+`ultra0-17.py` runs this automatically after pushing; run manually if you pushed the APK by hand.
 
-## 課金・オファー
+## Billing & Offers
 
 ### `app_not_started`
 
-Google One が 7 秒以内に起動しなかった。`ultra0-17.py` は 20 秒ポーリングで改善済み。
-それでも出る場合は端末が重い/ダイアログが残っているので、`adb shell input keyevent BACK` で
-前面のダイアログを閉じてから再実行。
+Google One did not launch within 7 seconds. `ultra0-17.py` fixes this by polling for 20 seconds.
+If it still occurs, a dialog or heavy load may be blocking launch -- send `adb shell input keyevent BACK` to dismiss foreground dialogs and retry.
 
-### `チェックアウト画面を検出できませんでした`（チェックアウトの文字が取れない）
+### Checkout screen could not be detected
 
-- 端末の言語が想定外 → `ultra0-17.py` は ja/en/zh に対応。それ以外の言語なら
-  `SUB_NEEDLES` / `INELIGIBLE_NEEDLES` / `PRICE_PAT` に追記
-- シートがアニメーション中で `uiautomator dump` が空になることがある → 数秒後に再試行
-- 既に登録済みの場合はシートが開かない
+- Unsupported device locale -> `ultra0-17.py` handles `ja/en/zh`. For other languages, add strings to `SUB_NEEDLES`, `INELIGIBLE_NEEDLES`, and `PRICE_PAT`.
+- `uiautomator dump` can return empty mid-animation -> retry after a few seconds.
+- If already subscribed to that exact offer, the sheet will not open.
 
-### `Play：このアカウントは無料トライアル対象外です`
+### Play: This account is not eligible for a free trial
 
-アカウントがすでに trial を使ったことがある、または対象外。
-`--list` で offer が出ているかを先に確認してください。
+The account has already used that trial or is ineligible.
+Run `--list` first to see which offers Play returns for the account.
 
-### 4 回目の重ね掛け（`6months-eft-ss-2026`）で「エラーが発生しました」
+### Error dialog on the 4th stack (`6months-eft-ss-2026`)
 
-Play 側が即エラーを返すケース。今回の アカウントではこの offer だけアップグレード不可でした。
-1〜3 回目が通っていれば 24 ヶ月は確保できているので、必須ではありません（予備扱い）。
+Play immediately rejected this upgrade offer on the test account.
+If steps 1-3 succeeded, 24 months are already secured; step 4 is optional backup only.
 
-### 購入後に日付が動かない
+### Date does not extend after purchase
 
-- サブスクが「有効（自動更新オン）」か確認（解約済みだと trial が付かない）
-- 収銀台の表示が「開始日 = 現在の期限日」になっていたら、subscription upgrade になっていない
-  → `--stack` を付けて再実行
+- Verify the subscription is **Active (auto-renew ON)**; canceled subscriptions often fail to apply trials.
+- If checkout displays "Starts on [current expiration date]", Play treated it as a scheduled switch rather than a subscription upgrade -> re-run with `--stack`.
 
-## 結果の確認
+## Verifying Results
 
 ```bash
-# Play の画面
+# Play UI check
 adb shell "am start -a android.intent.action.VIEW -d 'https://play.google.com/store/account/subscriptions'"
 adb shell uiautomator dump /sdcard/s.xml && adb shell cat /sdcard/s.xml | grep -o 'text="[^"]*"'
 
-# 内部 DB（root 必要）
+# Internal Play DB (requires root)
 adb shell "cp /data/data/com.android.vending/databases/library.db /data/local/tmp/lib.db; chmod 666 /data/local/tmp/lib.db"
 adb pull /data/local/tmp/lib.db /tmp/lib.db
 sqlite3 /tmp/lib.db "select doc_id, datetime(subs_valid_until_time/1000,'unixepoch') from ownership where doc_id like 'subs:%'"

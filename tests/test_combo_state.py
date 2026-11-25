@@ -1,6 +1,6 @@
-"""combo_core のサブスク状態判定（純粋ロジック）のテスト。
+"""Tests for pure subscription state classification in combo_core.
 
-デバイス・frida・adb は一切使わない。時刻は now_ms で注入する。
+Uses no device, frida, or adb; injects time via now_ms.
 """
 
 import sys
@@ -17,7 +17,7 @@ DOC_PREFIX = "subs:com.google.android.apps.subscriptions.red:"
 
 
 def ms(year, month, day, hour=12):
-    """ローカル時刻の epoch ミリ秒。表示もローカルなので TZ に依存しない。"""
+    """Return local epoch milliseconds (formatting also uses local time)."""
     return int(datetime(year, month, day, hour).timestamp() * 1000)
 
 
@@ -75,7 +75,7 @@ class ParseOwnershipRowsTests(unittest.TestCase):
         self.assertTrue(combo_core.parse_ownership_rows(rows, now_ms=NOW)[0].active)
         self.assertFalse(
             combo_core.parse_ownership_rows(rows, now_ms=FUTURE + 1)[0].active,
-            "期限ちょうど／超過は inactive でなければならない",
+            "Rows at or past expiration must be inactive",
         )
 
     def test_default_now_is_wall_clock(self):

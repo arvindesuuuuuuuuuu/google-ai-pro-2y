@@ -1,62 +1,60 @@
-# 免責・注意（DISCLAIMER）
+# DISCLAIMER
 
-本リポジトリ（`google-ai-pro-2y`）を使う前に、以下をすべて確認してください。
-同意できない場合は使用しないでください。
+Please review all of the following before using this repository (`google-ai-pro-2y`).
+If you do not agree to these terms, do not use this software.
 
-## 1. 非公式のプロジェクトです
+## 1. Unofficial Project
 
-本リポジトリは個人が私的に作った非公式のツールキットです。
-Google LLC、Google Play、Google One とは一切関係がなく、承認・提携・サポートも受けていません。
-「Google」「Google Play」「Google One」「Google AI Pro」は各社の商標です。
+This repository is an unofficial toolkit created independently.
+It is not affiliated with, endorsed by, partnered with, or supported by Google LLC, Google Play, or Google One.
+"Google", "Google Play", "Google One", and "Google AI Pro" are trademarks of their respective owners.
 
-## 2. 実際の課金が発生しうる
+## 2. Actual Charges May Occur
 
-本リポジトリのスクリプトは、Play の課金画面を開くところまでを自動化します。
-無料トライアルであっても、支払い方法の登録や初回認証が必要です。
-無料期間が終われば、自動更新によって実際に課金されます。
-金額・期間・更新日は必ず Play の画面で確認し、自分の目で判断してください。
+The scripts in this repository automate the steps up to opening the Google Play billing sheet.
+Even for a free trial, a payment method must be on file and initial authorization is required.
+Once the free period ends, recurring charges will apply automatically via auto-renewal.
+Always verify the price, duration, and renewal date directly on the Google Play screen before confirming.
 
-## 3. `micros=0` は「0 円で買える」という意味ではありません
+## 3. `micros=0` Does Not Mean "Free Forever"
 
-`micros=0` は、最初の請求段階の価格が 0 であることしか示しません。
-次のことは何も保証しません。
+`micros=0` only indicates that the price of the initial billing phase is zero.
+It does not guarantee any of the following:
 
-- そのアカウントが無料トライアルの対象であること（適格性）
-- 無料期間が終わったあとに請求される金額（更新価格）
-- ずっと無料で使い続けられること
+- That the account is eligible for the free trial
+- The renewal price charged after the free period ends
+- Continued free access after the initial period
 
-## 4. リスクは自己責任です
+## 4. Use at Your Own Risk
 
-本ソフトウェアの利用によって生じた結果は、すべて利用者の責任です。
-次のような不利益が起きる可能性があります。
+You are solely responsible for all outcomes resulting from using this software.
+Potential consequences include, but are not limited to:
 
-- Google アカウントの停止・利用制限（BAN）
-- 意図しない課金、二重の購入
-- 端末のデータ消失、再起動ループ、故障
-- サブスクの状態が想定と違う形になること
+- Google account suspension or ban
+- Unintended charges or duplicate purchases
+- Device data loss, boot loops, or hardware malfunction
+- Unexpected subscription states
 
-作者は、これらの結果について一切の責任を負いません。
+The author assumes no liability whatsoever for any such outcomes.
 
-## 5. 規約と法令の遵守は利用者の責任です
+## 5. Compliance with Terms and Laws
 
-Google の利用規約（Play の規約、Google One の規約を含む）と、
-お住まいの国の法令を守る責任は利用者にあります。
-本リポジトリは、規約違反や法令違反を推奨するものではありません。
+You are solely responsible for complying with Google's Terms of Service (including Google Play and Google One terms) and all applicable laws in your jurisdiction.
+This repository does not encourage or endorse violating any terms of service or laws.
 
-## 6. 無保証（as is）
+## 6. No Warranty (As Is)
 
-本ソフトウェアは "as is"（現状のまま）で提供されます。
-明示・黙示を問わず、商品性・特定目的への適合性・非侵害を含むいかなる保証もしません。
-作者は、利用または利用不能から生じるいかなる損害についても責任を負いません。
+This software is provided "as is", without warranty of any kind, express or implied, including but not limited to merchantability, fitness for a particular purpose, or non-infringement.
+In no event shall the author be liable for any damages arising out of the use or inability to use this software.
 
-## 7. 機密情報は収集も送信もしません
+## 7. No Collection or Transmission of Sensitive Data
 
-本ソフトウェアは、アカウント情報、クレジットカード情報、購入トークンを
-収集も送信しません。処理はすべてローカル（手元の PC と、USB でつないだ端末の間）で完結します。
-詳しい扱いは [SECURITY.md](SECURITY.md) を参照してください。
+This software does not collect or transmit account credentials, credit card details, or purchase tokens.
+All processing stays local between your host PC and the USB/ADB-connected device.
+See [SECURITY.md](SECURITY.md) for full details on data handling.
 
-## 8. 内容は予告なく変わります
+## 8. Subject to Change Without Notice
 
-オファーの有無・価格・期間は、Google 側の都合で予告なく変更・終了します。
-本リポジトリの記述（`docs/` を含む）も、予告なく変更・削除されることがあります。
-実測値や画面の文言は、取得した時点のものです。
+Offer availability, pricing, and durations may change or end at any time at Google's discretion.
+Documentation in this repository (including `docs/`) may also be modified or removed without prior notice.
+Recorded measurements and UI text reflect the state at the time they were captured.

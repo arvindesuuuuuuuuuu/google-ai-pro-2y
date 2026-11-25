@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""sku_scanner.py —— Google One の SKU / offer を「読むだけ」の CLI。
+"""sku_scanner.py -- Read-only CLI to inspect Google One SKUs and Play offers.
 
-購入・チェックアウト・起動操作は一切行わない。frida は実機照会時にだけ
-遅延 import するので、frida が無い環境でも generate / summarize が動く。
+Never initiates purchases, checkout flows, or app launches. Lazily imports frida
+only during live queries so `generate` and `summarize` run with zero device deps.
 """
 
 from __future__ import annotations
@@ -29,18 +29,15 @@ MIN_TIMEOUT = 1.0
 MAX_TIMEOUT = 30.0
 DEFAULT_BATCH_SIZE = 20
 
-# injected.js の PRODUCTS は build_js(plan="5x", list_only=True) でこの形に置換される。
+# build_js(plan="5x", list_only=True) rewrites PRODUCTS in injected.js to this literal.
 PRODUCTS_LITERAL = 'var PRODUCTS=["g1.play.20tb"];'
-# build_js(list_only=True) が 1 箇所だけ差し込む読み取り専用フラグ。
+# Read-only flag injected exactly once by build_js(list_only=True).
 LIST_ONLY_LITERAL = "var LIST_ONLY=true;"
 
 
 @dataclass
 class ScanOutcome:
-    """1 回のスキャンの結果と、バッチの成否をまとめたもの。
-
-    成否を呼び出し側（終了コード）に渡すために、rows だけでは足りない。
-    """
+    """Aggregated offers plus per-batch success/timeout counts for exit status."""
 
     rows: list
     batches_ok: int
@@ -49,15 +46,12 @@ class ScanOutcome:
 
 
 def _exit_code_for(outcome: ScanOutcome) -> int:
-    """1 バッチも完了しなかった場合は失敗として扱う。
-
-    一部のバッチがタイムアウトしても、完了したバッチが 1 つでもあれば成功（0）。
-    """
+    """Return 0 if at least one batch completed; 1 if every batch failed."""
     return 0 if outcome.batches_ok > 0 else 1
 
 
 def _split_values(values: Sequence[str]) -> list:
-    """--periods 18months,12months と --periods 18months 12months の両方を受け付ける。"""
+    """Accept both `--periods 18months,12months` and `--periods 18months 12months`."""
     result = []
     for value in values:
         result.extend(part.strip() for part in value.split(",") if part.strip())
@@ -67,60 +61,60 @@ def _split_values(values: Sequence[str]) -> list:
 def _add_generation_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--tiers", nargs="+", default=list(core.DEFAULT_TIERS), metavar="TIER",
-        help="対象 tier（カンマ区切り・空白区切りどちらも可）",
+        help="Target tiers (space- or comma-separated)",
     )
     parser.add_argument(
         "--periods", nargs="+", default=list(core.DEFAULT_PERIODS), metavar="PERIOD",
-        help="対象期間（例: 18months,12months）",
+        help="Target periods (e.g. 18months,12months)",
     )
     parser.add_argument(
         "--suffixes", nargs="+", default=list(core.DEFAULT_SUFFIXES), metavar="SUFFIX",
-        help="対象 offer サフィックス",
+        help="Target offer suffixes",
     )
-    parser.add_argument("--limit", type=int, default=None, help="候補数の上限")
+    parser.add_argument("--limit", type=int, default=None, help="Maximum candidate SKUs to generate")
     parser.add_argument(
         "--no-variants", action="store_true",
-        help="subs_variant の SKU を候補に含めない",
+        help="Exclude subs_variant SKUs from candidate generation",
     )
 
 
 def _add_output_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--format", choices=("table", "json"), default="table",
-        help="出力形式（既定: table）",
+        help="Output format (default: table)",
     )
     parser.add_argument(
         "--output", metavar="PATH",
-        help="レポートの保存先（省略時は既定ディレクトリに保存）",
+        help="Save report to PATH (defaults to ultra0-report/sku-scan-*.json)",
     )
 
 
 def _timeout_seconds(value: str) -> float:
-    """--timeout を 1〜30 秒に制限する（0 や過大な値は端末側で事故になる）。"""
+    """Clamp --timeout to 1..30s to prevent hangs or missed callbacks."""
     try:
         seconds = float(value)
     except (TypeError, ValueError):
         raise argparse.ArgumentTypeError(
-            f"--timeout は秒数を数値で指定してください: {value!r}"
+            f"--timeout must be a number of seconds: {value!r}"
         ) from None
     if not MIN_TIMEOUT <= seconds <= MAX_TIMEOUT:
         raise argparse.ArgumentTypeError(
-            f"--timeout は {MIN_TIMEOUT:g}〜{MAX_TIMEOUT:g} 秒の範囲で指定してください: {value}"
+            f"--timeout must be between {MIN_TIMEOUT:g} and {MAX_TIMEOUT:g} seconds: {value}"
         )
     return seconds
 
 
 def _batch_size(value: str) -> int:
-    """--batch-size を 1 以上に制限する（0 だと 1 件も照会されない）。"""
+    """Require --batch-size >= 1."""
     try:
         size = int(value)
     except (TypeError, ValueError):
         raise argparse.ArgumentTypeError(
-            f"--batch-size は整数で指定してください: {value!r}"
+            f"--batch-size must be an integer: {value!r}"
         ) from None
     if size < 1:
         raise argparse.ArgumentTypeError(
-            f"--batch-size は 1 以上で指定してください: {value}"
+            f"--batch-size must be at least 1: {value}"
         )
     return size
 
@@ -128,38 +122,38 @@ def _batch_size(value: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sku_scanner.py",
-        description="Google One の SKU / offer を読み取るだけのスキャナ（登録操作は行いません）",
+        description="Read-only scanner for Google One SKUs and Play offers (never initiates checkout)",
     )
     commands = parser.add_subparsers(dest="command")
 
-    generate = commands.add_parser("generate", help="照会対象の SKU 候補を生成する")
+    generate = commands.add_parser("generate", help="Generate candidate SKUs to query")
     _add_generation_flags(generate)
     _add_output_flags(generate)
 
-    query = commands.add_parser("query", help="実機から offer を読み取る（読み取り専用）")
+    query = commands.add_parser("query", help="Query offers from a connected device (read-only)")
     target = query.add_mutually_exclusive_group()
-    target.add_argument("--skus", nargs="+", metavar="SKU", help="照会する SKU を直接指定")
-    target.add_argument("--candidates", action="store_true", help="生成した候補を全部照会")
+    target.add_argument("--skus", nargs="+", metavar="SKU", help="Explicit SKUs to query")
+    target.add_argument("--candidates", action="store_true", help="Query all generated candidates")
     _add_generation_flags(query)
     query.add_argument(
         "--batch-size", type=_batch_size, default=DEFAULT_BATCH_SIZE,
         metavar="N",
-        help=f"1 回の注入で照会する SKU 数（1 以上・既定: {DEFAULT_BATCH_SIZE}）",
+        help=f"SKUs queried per Frida injection (>=1, default: {DEFAULT_BATCH_SIZE})",
     )
     query.add_argument(
         "--timeout", type=_timeout_seconds, default=8.0, metavar="SECONDS",
-        help=f"各バッチの待ち時間（{MIN_TIMEOUT:g}〜{MAX_TIMEOUT:g} 秒・既定: 8）",
+        help=f"Per-batch wait timeout ({MIN_TIMEOUT:g}-{MAX_TIMEOUT:g}s, default: 8)",
     )
     _add_output_flags(query)
 
-    summarize = commands.add_parser("summarize", help="保存済みレポートを読みやすく整形する")
-    summarize.add_argument("--input", required=True, metavar="PATH", help="入力レポート（JSON）")
+    summarize = commands.add_parser("summarize", help="Format a saved JSON report")
+    summarize.add_argument("--input", required=True, metavar="PATH", help="Input JSON report path")
     _add_output_flags(summarize)
     return parser
 
 
 def _secure_write(path: str, text: str) -> None:
-    """一時ファイル → os.replace で、.mode 0600 のレポートを残す。"""
+    """Atomically write report with 0600 file permissions."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
@@ -191,15 +185,15 @@ def _candidate_kwargs(args: argparse.Namespace) -> dict:
 
 
 def _format_candidate_table(skus: Sequence[str]) -> str:
-    lines = ["SKU 候補:", "-" * 40]
+    lines = ["Candidate SKUs:", "-" * 40]
     if not skus:
-        lines.append("該当する候補はありません。")
+        lines.append("No matching candidate SKUs.")
     lines.extend(f"{index + 1:>3}. {sku}" for index, sku in enumerate(skus))
     return "\n".join(lines)
 
 
 def _emit(text: str, args: argparse.Namespace, report_text: Optional[str] = None) -> Optional[str]:
-    """標準出力に結果を出し、必要ならレポートも保存して保存先パスを返す。"""
+    """Print text to stdout, save report when requested, and return saved path."""
     saved: Optional[str] = None
     if report_text is not None:
         saved = str(args.output or _default_report_path())
@@ -213,22 +207,21 @@ def _emit(text: str, args: argparse.Namespace, report_text: Optional[str] = None
 
 def _read_note() -> str:
     return (
-        "注: この結果は読み取り専用スキャンの参考値です。"
-        "適格性や実際の請求額を証明するものではありません。"
+        "Note: Read-only scan results are informational only; "
+        "they do not prove eligibility or actual charge amounts."
     )
 
 
 class FridaSource:
-    """実機の Google One に読み取り専用エージェントを注入して offer を集める。
+    """Inject the read-only Frida agent into Google One to collect offers.
 
-    launch_app() や課金フローは呼ばない。既に動いているプロセスにだけ attach する。
+    Never invokes launch_app() or checkout flows; only attaches to the running process.
     """
 
-    # バッチの終端になりうるイベント。no_offers は商品ごとに送られて continue
-    # するため（agent/injected.js:69）、ここに入れると残りの SKU が無言で
-    # 未照会のまま捨てられる。
+    # Terminal events per batch. `no_offers` fires per SKU before `continue` in
+    # agent/injected.js:69, so treating it as terminal drops remaining SKUs.
     TERMINAL_EVENTS = frozenset({"list_only", "no_trial", "query_err", "disc"})
-    # 読み取り専用モードでは絶対に観測してはいけないイベント（課金導線の証拠）。
+    # Events that must never appear in read-only mode (checkout flow evidence).
     FORBIDDEN_EVENTS = frozenset(
         {"launched", "stack_start", "activity", "purchase_cb"}
     )
@@ -249,32 +242,30 @@ class FridaSource:
             if "subscriptions.red" in name or name == "Google One":
                 return int(process.pid)
         raise RuntimeError(
-            "Google One (com.google.android.apps.subscriptions.red) のプロセスが見つかりません"
+            "Google One (com.google.android.apps.subscriptions.red) process not found"
         )
 
     @classmethod
     def _is_terminal(cls, event: object) -> bool:
-        """バッチの完了通知かどうか。文字列以外は決して例外にしない。"""
+        """Return True when an event marks batch completion (never raises on non-strings)."""
         if not isinstance(event, str):
             return False
         if event in cls.TERMINAL_EVENTS:
             return True
-        # boot_err / launch_err / mode_err ... はすべて異常終了として扱う。
         return event.endswith("_err") or event == "disc"
 
     @classmethod
     def _is_forbidden(cls, event: object) -> bool:
-        """課金導線のイベントかどうか。文字列以外は False。"""
+        """Return True if an event indicates billing flow execution."""
         return isinstance(event, str) and event in cls.FORBIDDEN_EVENTS
 
     @staticmethod
     def _pd_terminates(code: object, count: object) -> bool:
-        """この pd（商品照会の応答）でもう結果は来ないか。
+        """Return True when onProductDetailsResponse ends without emitting offers.
 
-        agent は `pd` の code が 0 以外、または返却リストが空のとき、
-        何も送らずに return する（agent/injected.js の onProductDetailsResponse）。
-        終端扱いにしないと、存在しない SKU を照会するたびに必ずタイムアウトし、
-        端末異常と誤読させる。
+        agent/injected.js returns early without `no_trial` when `code != 0` or the
+        returned list is empty; treating that as terminal avoids false timeouts on
+        unknown SKUs.
         """
 
         def _as_int(value: object) -> Optional[int]:
@@ -291,38 +282,29 @@ class FridaSource:
 
     @staticmethod
     def _assert_read_only(js: str) -> None:
-        """注入前の JS が本当に読み取り専用かを検証する（fail-closed）。
-
-        build_js() の文字列置換は無検証だと静かに失敗し、エージェントが
-        launchBillingFlow まで到達しうる。置換結果をここで必ず確認する。
-        """
+        """Fail closed unless the assembled JS strictly enforces read-only mode."""
         if not isinstance(js, str) or not js:
             raise RuntimeError(
-                "エージェント JS が空です（読み取り専用モードを検証できないため中止します）"
+                "Agent JS is empty (aborting because read-only mode cannot be verified)"
             )
         if js.count(LIST_ONLY_LITERAL) != 1:
             raise RuntimeError(
-                "エージェント JS に読み取り専用フラグ "
-                f"`{LIST_ONLY_LITERAL}` がちょうど 1 つ見つかりません"
-                "（課金導線に到達する恐れがあるため中止します）"
+                f"Expected exactly one read-only flag `{LIST_ONLY_LITERAL}` in agent JS "
+                "(aborting to prevent reaching checkout flow)"
             )
         if js.count(PRODUCTS_LITERAL) != 1:
             raise RuntimeError(
-                "エージェント JS の PRODUCTS リテラルがちょうど 1 つ見つかりません"
-                "（対象 SKU を安全に差し替えられないため中止します）"
+                "Expected exactly one PRODUCTS literal in agent JS "
+                "(aborting because SKUs cannot be safely substituted)"
             )
 
     @staticmethod
     def _load_js() -> str:
-        """ハイフン入りファイル名を importlib で読み込み、list_only の JS を作る。
-
-        .pyc を新規に作るとリポジトリを汚すため、exec_module の間だけ
-        バイトコード書き込みを止める。読み込み後は必ず _assert_read_only を通す。
-        """
+        """Load ultra0-17.py via importlib without writing .pyc bytecode and build LIST_ONLY JS."""
         path = Path(__file__).resolve().parent / "ultra0-17.py"
         spec = importlib.util.spec_from_file_location("ultra0_17", str(path))
         if spec is None or spec.loader is None:
-            raise RuntimeError(f"エージェント生成モジュールを読み込めません: {path}")
+            raise RuntimeError(f"Could not load agent builder module: {path}")
         module = importlib.util.module_from_spec(spec)
         previous = sys.dont_write_bytecode
         sys.dont_write_bytecode = True
@@ -331,7 +313,7 @@ class FridaSource:
         finally:
             sys.dont_write_bytecode = previous
         if not hasattr(module, "build_js"):
-            raise RuntimeError(f"build_js() が見つかりません: {path}")
+            raise RuntimeError(f"build_js() not found in {path}")
         js = module.build_js(plan="5x", list_only=True)
         FridaSource._assert_read_only(js)
         return js
@@ -340,20 +322,19 @@ class FridaSource:
     def _inject_products(js: str, batch: Sequence[str]) -> str:
         if PRODUCTS_LITERAL not in js:
             raise RuntimeError(
-                "エージェント JS に PRODUCTS リテラルが見つかりません（build_js の出力を確認してください）"
+                "PRODUCTS literal not found in agent JS (check build_js output)"
             )
         replacement = "var PRODUCTS=" + json.dumps(list(batch), ensure_ascii=False) + ";"
         injected = js.replace(PRODUCTS_LITERAL, replacement, 1)
-        # 置換で読み取り専用フラグを壊していないことを差し替え後にも確認する。
         if injected.count(LIST_ONLY_LITERAL) != 1:
             raise RuntimeError(
-                "SKU 差し替え後の JS で読み取り専用フラグが失われました"
-                "（課金導線に到達する恐れがあるため中止します）"
+                "Read-only flag lost after SKU substitution "
+                "(aborting to prevent reaching checkout flow)"
             )
         return injected
 
     def _run_batch(self, js: str) -> tuple:
-        """1 バッチを実行し (収集イベント, タイムアウトしたか, 禁止イベント, スクリプトエラー) を返す。"""
+        """Execute one batch and return (collected_events, timed_out, forbidden_event, script_error)."""
         session = self._device.attach(self._pid)
         done = threading.Event()
         collected: list = []
@@ -365,14 +346,12 @@ class FridaSource:
             if isinstance(payload, dict):
                 event = payload.get("ev")
                 if self._is_forbidden(event):
-                    # LIST_ONLY が万一効いていなくても、ここで即座に止める。
                     state["forbidden"] = event
                     done.set()
                     return
                 if event == "offer":
                     collected.append(payload)
                 elif event == "pd":
-                    # 0 件・エラーコードなら以降の結果は来ないので打ち切る。
                     if self._pd_terminates(payload.get("code"), payload.get("n")):
                         done.set()
                 elif self._is_terminal(event):
@@ -399,21 +378,17 @@ class FridaSource:
         return collected, not completed, state["forbidden"], bool(state["script_error"])
 
     def _connect(self) -> None:
-        """frida の import と接続だけを行い、失敗は日本語 1 行の RuntimeError にまとめる。
-
-        frida の例外は Exception 直系で RuntimeError ではないため、
-        呼び出し側の except 節をすり抜けてトレースバックにならないようここで包む。
-        """
+        """Import frida and attach to Google One; wrap all frida exceptions in RuntimeError."""
         try:
-            import frida  # 実機接続時だけ import（generate/summarize は不要）
+            import frida  # Imported only when attaching to a device
 
             self._device = frida.get_usb_device(timeout=self._timeout)
             self._pid = self._find_pid(self._device)
-        except Exception as exc:  # noqa: BLE001 - frida 例外は RuntimeError ではない
+        except Exception as exc:  # noqa: BLE001
             self._device = None
             raise RuntimeError(
-                "端末に接続できませんでした"
-                f"（USB デバッグ・frida-server 起動・Google One 起動を確認してください）: {exc}"
+                "Could not connect to device "
+                f"(verify USB debugging, frida-server, and Google One running): {exc}"
             ) from exc
 
     def fetch(self, skus: Sequence[str], timeout: float) -> list:
@@ -432,17 +407,16 @@ class FridaSource:
                     collected, timed_out, forbidden, script_error = self._run_batch(injected)
                 except RuntimeError:
                     raise
-                except Exception as exc:  # noqa: BLE001 - frida 例外も日本語 1 行にまとめる
+                except Exception as exc:  # noqa: BLE001
                     self.batches_failed += 1
                     raise RuntimeError(
-                        "バッチの注入に失敗しました"
-                        f"（{start + 1}〜{start + len(batch)} 件目）: {exc}"
+                        f"Batch injection failed (items {start + 1}-{start + len(batch)}): {exc}"
                     ) from exc
                 if forbidden is not None:
                     self.batches_failed += 1
                     raise RuntimeError(
-                        "読み取り専用モードに反する事象を検出したため中止しました"
-                        f"（課金導線のイベント: {forbidden}）"
+                        "Aborted after detecting a non-read-only event "
+                        f"(checkout event: {forbidden})"
                     )
                 if timed_out:
                     self.timed_out = True
@@ -456,7 +430,6 @@ class FridaSource:
         return events
 
     def close(self) -> None:
-        # セッションとスクリプトはバッチごとの finally で後始末済み。
         self._device = None
         self._pid = None
 
@@ -477,7 +450,7 @@ def _run_summarize(args: argparse.Namespace) -> int:
         with open(args.input, encoding="utf-8") as handle:
             payload = handle.read()
     except OSError as exc:
-        raise ValueError(f"レポートを読み込めません: {args.input}: {exc}") from exc
+        raise ValueError(f"Could not read report: {args.input}: {exc}") from exc
     rows = core.parse_report(payload)
     text = (
         core.to_json(rows)
@@ -490,13 +463,10 @@ def _run_summarize(args: argparse.Namespace) -> int:
 
 
 def _run_query(args: argparse.Namespace, source_factory: Optional[Callable]) -> int:
-    # 照会対象は明示させる。既定の候補を勝手に生成して端末に流すと、
-    # 何を照会したのか分からないまま 100 件以上を注入してしまう。
     if not args.skus and not args.candidates:
         print(
-            "エラー: query には --skus（照会する SKU）か --candidates（生成した候補を全部）の"
-            "どちらかを指定してください。"
-            "候補を確認するだけなら `scan generate` を使ってください。",
+            "Error: query requires either --skus or --candidates. "
+            "Run `scan generate` to preview candidates without attaching.",
             file=sys.stderr,
         )
         return 2
@@ -506,7 +476,7 @@ def _run_query(args: argparse.Namespace, source_factory: Optional[Callable]) -> 
     else:
         skus = core.generate_candidates(**_candidate_kwargs(args))
     if not skus:
-        raise ValueError("照会する SKU がありません（--skus または候補生成条件を見直してください）")
+        raise ValueError("No SKUs to query (check --skus or candidate filters)")
 
     source = source_factory() if source_factory is not None else FridaSource(args.batch_size)
     try:
@@ -515,7 +485,6 @@ def _run_query(args: argparse.Namespace, source_factory: Optional[Callable]) -> 
         source.close()
 
     timed_out = bool(getattr(source, "timed_out", False))
-    # タイムアウトしたのにバッチ成否を報告しない情報源は成功とみなさない（fail-closed）。
     default_ok = 0 if timed_out else 1
     outcome = ScanOutcome(
         rows=core.dedupe_rows(core.parse_offer_events(events)),
@@ -532,12 +501,11 @@ def _run_query(args: argparse.Namespace, source_factory: Optional[Callable]) -> 
     )
     saved = _emit(text, args, report_text=report)
     if saved is not None:
-        print(f"レポートを保存しました: {saved}", file=sys.stderr)
+        print(f"Saved report: {saved}", file=sys.stderr)
     if outcome.timed_out:
         print(
-            "警告: バッチがタイムアウトしました（終端イベントを受け取れませんでした）。"
-            "端末の状態を確認し、--timeout を延ばすか "
-            "`./scripts/run.sh check` で自検してください。",
+            "Warning: batch timed out (no terminal event received). "
+            "Check the device state, increase --timeout, or run `./scripts/run.sh check`.",
             file=sys.stderr,
         )
     print(_read_note(), file=sys.stderr)
@@ -546,7 +514,7 @@ def _run_query(args: argparse.Namespace, source_factory: Optional[Callable]) -> 
 
 def main(argv: Optional[Sequence[str]] = None, source_factory: Optional[Callable] = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)  # argparse のエラーは SystemExit のまま返す
+    args = parser.parse_args(argv)
     try:
         if args.command == "generate":
             return _run_generate(args)
@@ -556,9 +524,8 @@ def main(argv: Optional[Sequence[str]] = None, source_factory: Optional[Callable
             return _run_query(args, source_factory)
         parser.print_help()
         return 2
-    except Exception as exc:  # noqa: BLE001 - frida/端末の例外も日本語 1 行にまとめる
-        # SystemExit / KeyboardInterrupt は Exception ではないので素通りする。
-        print(f"エラー: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
 

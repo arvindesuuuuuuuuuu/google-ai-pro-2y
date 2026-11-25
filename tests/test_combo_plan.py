@@ -1,6 +1,6 @@
-"""combo_core のプランニング（純粋ロジック）のテスト。
+"""Tests for pure planning logic in combo_core.
 
-2026-11-24 の実測（Pixel 7a / 有効期限 2028-11-21）をそのまま固定データにしている。
+Uses captured 2026-11-24 fixture data (Pixel 7a / expiration 2028-11-21).
 """
 
 import sys
@@ -14,7 +14,7 @@ import combo_core
 
 
 def ms(year, month, day, hour=12):
-    """ローカル時刻の epoch ミリ秒。表示もローカルなので TZ に依存しない。"""
+    """Return local epoch milliseconds (formatting also uses local time)."""
     return int(datetime(year, month, day, hour).timestamp() * 1000)
 
 
@@ -56,7 +56,7 @@ class MonthsFromPeriodTests(unittest.TestCase):
                 self.assertEqual(combo_core.months_from_period(period), expected)
 
     def test_unknown_periods_are_zero(self):
-        for period in ("", None, "bogus", "P", "P1W", "月"):
+        for period in ("", None, "bogus", "P", "P1W", "month"):
             with self.subTest(period=period):
                 self.assertEqual(combo_core.months_from_period(period), 0)
 
@@ -65,28 +65,30 @@ class StackIsPossibleTests(unittest.TestCase):
     def test_fresh(self):
         possible, message = combo_core.stack_is_possible("fresh", False, False)
         self.assertTrue(possible)
-        self.assertIn("新規登録", message)
-        self.assertIn("最長", message)
+        self.assertIn("new subscription", message)
+        self.assertIn("longest", message)
 
     def test_expired(self):
         possible, message = combo_core.stack_is_possible("expired", False, False)
         self.assertTrue(possible)
-        self.assertIn("期限切れ", message)
+        self.assertIn("Expired", message)
 
     def test_active_with_stack_offers_and_auto_renew(self):
         possible, message = combo_core.stack_is_possible("active", True, True)
         self.assertTrue(possible)
-        self.assertEqual(message, "有効なサブスクがあるため積み上げ可能")
+        self.assertEqual(message, "Active subscription found; stacking is eligible")
 
     def test_active_without_auto_renew(self):
         possible, message = combo_core.stack_is_possible("active", True, False)
         self.assertFalse(possible)
-        self.assertEqual(message, "自動更新がオフのため積み上げできません（先に解約しないこと）")
+        self.assertEqual(
+            message, "Auto-renew is off; cannot stack (do not cancel before stacking)"
+        )
 
     def test_active_without_stack_offers(self):
         possible, message = combo_core.stack_is_possible("active", False, True)
         self.assertFalse(possible)
-        self.assertEqual(message, "積み上げ可能な無料オファーが見つかりません")
+        self.assertEqual(message, "No stackable free offers found")
 
 
 class PlanActionsTests(unittest.TestCase):
@@ -119,7 +121,7 @@ class PlanActionsTests(unittest.TestCase):
         self.assertTrue(actions)
         self.assertFalse(
             any(action.kind == "new_subscription" for action in actions),
-            "有効なサブスクがあるときに新規登録を出してはいけない",
+            "Must never emit new_subscription when an active plan already exists",
         )
         self.assertTrue(all(action.kind == "stack" for action in actions))
         self.assertEqual(
@@ -204,9 +206,9 @@ class FormatPlanTests(unittest.TestCase):
         text = "\n".join(lines)
 
         self.assertIn("2028-11-21", text)
-        self.assertIn("有効なサブスクがあるため積み上げ可能", text)
-        self.assertIn("1. [積み上げ] g1.2tb.ai.subs_variant / 12months-eft / +12ヶ月", text)
-        self.assertIn("2. [積み上げ] g1.2tb.ai.subs_variant / 6months-eft / +6ヶ月", text)
+        self.assertIn("Active subscription found; stacking is eligible", text)
+        self.assertIn("1. [Stack] g1.2tb.ai.subs_variant / 12months-eft / +12 months", text)
+        self.assertIn("2. [Stack] g1.2tb.ai.subs_variant / 6months-eft / +6 months", text)
         self.assertIn("micros=0", text)
         self.assertIn("Play", text)
 
@@ -216,21 +218,21 @@ class FormatPlanTests(unittest.TestCase):
         lines = combo_core.format_plan(actions, "fresh", None)
         text = "\n".join(lines)
 
-        self.assertIn("1. [新規] g1.2tb.ai.18months_eft / eft-18months / +18ヶ月", text)
-        self.assertIn("新規登録", text)
-        self.assertIn("未加入", text)
+        self.assertIn("1. [New] g1.2tb.ai.18months_eft / eft-18months / +18 months", text)
+        self.assertIn("new subscription", text)
+        self.assertIn("not subscribed", text)
 
     def test_active_without_stack_offers_reports_it_and_has_no_steps(self):
         lines = combo_core.format_plan([], "active", END)
         text = "\n".join(lines)
 
-        self.assertIn("積み上げ可能な無料オファーが見つかりません", text)
+        self.assertIn("No stackable free offers found", text)
         self.assertNotIn("1. [", text)
 
     def test_empty_fresh_plan_reports_no_offers(self):
         text = "\n".join(combo_core.format_plan([], "fresh", None))
 
-        self.assertIn("無料オファー", text)
+        self.assertIn("free offers", text)
         self.assertIn("micros=0", text)
 
     def test_caveat_is_always_present(self):

@@ -1,8 +1,8 @@
-"""実機で発覚した3つの不具合の回帰テスト。
+"""Regression tests for three bugs discovered on real hardware:
 
-1. 積み上げなのに STACK フラグを立てていなかった（新規購入扱いになり適用されない）
-2. 期限の比較がミリ秒の僅差（数時間のずれ）を「伸びた」と誤判定していた
-3. 複数アカウントの行が混ざり、別アカウントの期限を比較していた
+1. Missing STACK flag during stack runs (treated as new purchase and not applied)
+2. Millisecond/few-hour timestamp jitter misclassified as an extension
+3. Mixing ownership rows across multiple Google accounts
 """
 
 import io
@@ -28,7 +28,7 @@ def _row(account, until_ms, sku="g1.2tb.ai.subs_variant"):
 
 class ExtensionThresholdTests(unittest.TestCase):
     def test_small_drift_is_not_treated_as_an_extension(self):
-        """数時間のずれは「伸びた」と見なさない。"""
+        """A few hours of timestamp drift does not count as an extension."""
         self.assertFalse(core.is_meaningful_extension(NOW_MS, NOW_MS + 2 * HOUR_MS))
         self.assertFalse(core.is_meaningful_extension(NOW_MS, NOW_MS))
 
@@ -135,7 +135,7 @@ class RunGuardsMultipleAccountsTests(unittest.TestCase):
             ],
             lambda: rows,
         )
-        self.assertNotIn("複数", err)
+        self.assertNotIn("Multiple accounts", err)
 
 
 if __name__ == "__main__":
@@ -143,7 +143,7 @@ if __name__ == "__main__":
 
 
 class ForegroundGuardTests(unittest.TestCase):
-    """Google One が前面にいないと課金画面は出ない（no_activity で即 return）。"""
+    """Billing checkout only opens when Google One is in the foreground (otherwise no_activity)."""
 
     def test_no_activity_is_a_terminal_failure(self):
         self.assertIn("no_activity", combo.TERMINAL_FAILURE_EVENTS)
@@ -159,7 +159,7 @@ class ForegroundGuardTests(unittest.TestCase):
     def test_failure_message_mentions_opening_google_one(self):
         message = combo._no_activity_hint()
         self.assertIn("Google One", message)
-        self.assertTrue("開" in message or "前面" in message)
+        self.assertTrue("open" in message.lower() or "foreground" in message.lower())
 
 
 class EnsureForegroundTests(unittest.TestCase):
@@ -193,4 +193,4 @@ class EnsureForegroundTests(unittest.TestCase):
              mock.patch.object(combo, "_adb", side_effect=lambda *a, **k: calls.append(a) or ""), \
              mock.patch.object(combo.time, "sleep", lambda *_: None):
             executor._ensure_foreground()
-        self.assertTrue(any("monkey" in str(call) for call in calls), "前面化コマンドが呼ばれること")
+        self.assertTrue(any("monkey" in str(call) for call in calls), "Expected foreground launch command")

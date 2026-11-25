@@ -1,4 +1,4 @@
-"""読み取り専用スキャナの安全性に関するテスト（購入導線・注入引数）。"""
+"""Safety tests for the read-only scanner (no purchase flags or mutated args)."""
 
 import io
 import sys
@@ -28,7 +28,7 @@ class RecordingSource:
 
 class SafetyTests(unittest.TestCase):
     def setUp(self):
-        """レポートの既定保存先を一時ディレクトリに向け、repo を汚さない。"""
+        """Point default reports to a temp directory to keep the repo clean."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         patcher = mock.patch.object(

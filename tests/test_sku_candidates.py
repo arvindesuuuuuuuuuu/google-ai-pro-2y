@@ -1,6 +1,6 @@
-"""SKU 候補の生成・検証・相互変換に関する振る舞いテスト。
+"""Behavior tests for SKU candidate generation, validation, and parsing.
 
-実装モジュールは scripts/ に置かれる前提。device / frida / network は使用しない。
+Assumes modules reside in scripts/; uses no device, frida, or network.
 """
 
 import sys
@@ -99,7 +99,7 @@ class CandidateGenerationTests(unittest.TestCase):
             sku_scanner_core.generate_candidates(periods=("1month", "18mo"))
 
     def test_build_and_parse_sku_round_trip_including_dotted_tiers(self):
-        # suffix は "." 付きで統一する（parse_sku も ".subs_variant" を返す仕様）。
+        # Prefix variant suffixes with "." (parse_sku returns ".subs_variant").
         cases = (
             ("2tb.ai", "18months", "_eft", "g1.2tb.ai.18months_eft", ("2tb.ai", "18months", "_eft")),
             ("2tb.ai", "", ".subs_variant", "g1.2tb.ai.subs_variant", ("2tb.ai", "", ".subs_variant")),

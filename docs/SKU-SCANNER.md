@@ -1,155 +1,125 @@
-# SKU スキャナ（読み取り専用）
+# SKU Scanner (Read-Only)
 
-`scripts/sku_scanner.py` は、Google One のサブスク SKU と offer（価格・期間）を
-読むだけのツールです。`./scripts/run.sh scan ...` から呼び出します。
+`scripts/sku_scanner.py` is a read-only tool for inspecting Google One subscription SKUs and offers (pricing and duration). Invoke it via `./scripts/run.sh scan ...`.
 
-## 目的
+## Purpose
 
-`step1`〜`step4` は実際にトライアルを登録する流れですが、`scan` は
-「どの SKU にどの offer が存在するか」を先に調べるためのものです。
-候補 SKU の生成、実機からの offer 取得、保存済みレポートの整形ができます。
+Whereas `step1` through `step4` enroll trials, `scan` checks **which SKUs and offers exist** ahead of time.
+It supports generating candidate SKUs offline, querying offers on a live device, and formatting saved JSON reports.
 
-## 前提（実機照会する場合）
+## Prerequisites (For Live Device Queries)
 
-`query` は「すでに動いている Google One」に Frida で attach するだけのツールです。
-アプリの起動は行いません。そのため、次の 4 つがすべて揃っていないと
-`端末に接続できませんでした` などのエラーになります。
+`query` attaches via Frida only to an **already running Google One process**.
+It never launches the app itself. All four conditions below must be satisfied, or it will exit with a connection error:
 
-1. root 済み端末で USB デバッグを許可し、`adb devices` に 1 台だけ表示される
-2. 端末側で frida-server が起動している（バージョン不一致は `./scripts/run.sh fix-frida`）
-3. 端末側で Google One（`com.google.android.apps.subscriptions.red`）が起動している
-   （ホーム画面から一度開いておく）
-4. `./scripts/run.sh check` で自検が通る（端末 / root / frida / 課金モジュールを確認）
+1. A rooted device with USB debugging enabled appears as a single entry in `adb devices`.
+2. `frida-server` is running on the device (fix version mismatches with `./scripts/run.sh fix-frida`).
+3. Google One (`com.google.android.apps.subscriptions.red`) is already running on the device (open it once from the home screen).
+4. `./scripts/run.sh check` passes (verifies device / root / frida / billing module).
 
-`generate` と `summarize` は端末も frida も不要です。
+`generate` and `summarize` require neither a device nor frida.
 
-## 読み取り専用の境界
+## Read-Only Guarantees
 
-スキャナは以下の操作を一切行いません。
+The scanner never performs any of the following:
 
-- チェックアウト画面の起動・購入・登録
-- アプリの起動・再起動（`launch_app()` の呼び出しなし）
-- トライアルの適用・判定・重ね掛け
-- トークンやアカウント情報の出力・保存
+- Opening checkout sheets, purchasing, or subscribing
+- Launching or restarting apps (never calls `launch_app()`)
+- Evaluating eligibility, applying trials, or stacking offers
+- Writing or saving purchase tokens or account credentials
 
-実機接続時は、すでに動いている Google One のプロセスにだけ Frida で attach し、
-エージェントを `list_only` モード（`build_js(plan="5x", list_only=True)`）で読み込みます。
-課金フローに進むコードパスは使いません。さらに、注入する直前に次の 2 点を検証し、
-どちらかが欠けていれば注入せずに中止します（fail-closed）。
+When querying a device, it attaches only to the running Google One process and loads the agent in `list_only` mode (`build_js(plan="5x", list_only=True)`).
+Billing checkout code paths are never entered. Immediately before injection, it verifies two invariants and aborts without injecting if either fails (fail-closed):
 
-- 読み取り専用フラグ `var LIST_ONLY=true;` がちょうど 1 つある
-- 対象 SKU を差し替えるための `PRODUCTS` リテラルがちょうど 1 つある
+- Exactly one read-only flag `var LIST_ONLY=true;` is present
+- Exactly one `PRODUCTS` literal is present for target SKU substitution
 
-万一 `LIST_ONLY` が効いていなくても、`launched` / `stack_start` / `activity` /
-`purchase_cb` のいずれかを受信した時点でスキャンを中断します。
+If `LIST_ONLY` ever fails to suppress checkout actions, receiving any `launched`, `stack_start`, `activity`, or `purchase_cb` event immediately aborts the scan.
 
-## 使い方
+## Usage
 
-### 候補 SKU を生成する（端末不要）
+### Generate Candidate SKUs (Offline)
 
 ```bash
 ./scripts/run.sh scan generate --tiers 2tb.ai --periods 18months,12months --suffixes _eft --format table
 ```
 
-`--format json` なら SKU の配列だけが stdout に出ます（日本語の注記は stderr）。
+With `--format json`, only the JSON array of SKUs is written to stdout (status notes go to stderr).
 
-### 実機から offer を読み取る
+### Query Offers on a Device
 
-`query` は照会対象を明示する必要があります。`--skus` か `--candidates` の
-どちらかを必ず指定してください（どちらも無い場合は、端末に接続する前にエラー終了します）。
+`query` requires an explicit target list. You must pass either `--skus` or `--candidates` (omitting both exits with an error before touching the device).
 
 ```bash
-# 既定の候補をまとめて照会（バッチ 20 件・タイムアウト 8 秒）
+# Query default candidate list in batches of 20 with an 8s timeout
 ./scripts/run.sh scan query --candidates --batch-size 20 --timeout 8
 
-# SKU を直接指定して JSON で表示
+# Query a specific SKU and output JSON
 ./scripts/run.sh scan query --skus g1.2tb.ai.subs_variant --format json
 ```
 
-- `--skus` と `--candidates` は同時に指定できません。
-- `--timeout` は 1〜30 秒（既定 8）。範囲外は端末に接続する前にエラーになります。
-- `--batch-size` は 1 以上（既定 20）。0 はエラーになります。
-- `--limit` は候補数の上限で、表の行数とは関係ありません。既定の候補は 343 件で、
-  `--limit 120` のように絞ると ai.pro の長期間 SKU が気づかないうちに候補から外れます。
-  全件を照会するなら `--limit` を省略してください。
+- `--skus` and `--candidates` are mutually exclusive.
+- `--timeout` must be between 1 and 30 seconds (default: 8). Out-of-range values error out before connecting.
+- `--batch-size` must be >= 1 (default: 20). `0` raises an error.
+- `--limit` caps the candidate count, not table rows. The default candidate set has 343 entries; setting `--limit 120` can silently drop longer-duration `ai.pro` SKUs. Omit `--limit` to scan the full set.
 
-結果は `ultra0-report/sku-scan-<タイムスタンプ>.json` に保存されます
-（`--output` で保存先を変更可。権限は 0600）。保存先パスは stderr に表示されます
-（stdout は整形結果だけなので、パイプで他のコマンドに渡せます）。
+Results are saved to `ultra0-report/sku-scan-<timestamp>.json` (override with `--output`; file permissions `0600`). The saved path is printed to stderr so stdout stays clean for piping.
 
-バッチがタイムアウトした場合は、結果はそのまま保存しつつ stderr に警告
-（`タイムアウト`）を出します。1 バッチも完了しなかった場合だけ終了コードが非ゼロになります。
-タイムアウトが続くときは端末の状態を確認し、`--timeout` を延ばすか
-`./scripts/run.sh check` で自検してください。
+If a batch times out, partial results are still saved and a timeout warning is printed to stderr. The exit code becomes non-zero only if zero batches complete.
+If timeouts persist, inspect the device state, increase `--timeout`, or run `./scripts/run.sh check`.
 
-### 保存済みレポートを整形する
+### Summarize a Saved Report
 
 ```bash
 ./scripts/run.sh scan summarize --input ultra0-report/sku-scan-20261124-130000.json
 ```
 
-`--format json` で JSON のまま再出力できます。
+Pass `--format json` to re-emit formatted JSON.
 
-### テスト
+### Unit Tests
 
 ```bash
 ./scripts/run.sh test
-# または
+# or
 python3 -m unittest discover -s tests -v
 ```
 
-## Ultra 系 tier と iOS 由来の知識
+## Ultra Tiers and iOS-Derived Findings
 
-既定の候補には Ultra 系 tier（`20tb`、`play.20tb`、`ai.ultra`）と
-サフィックス `_eft.acq`、`_ip_75p.acq` が含まれます。いずれも iOS プロジェクト
-[g1-acq](https://github.com/crhywun/g1-acq) が扱う product id を手がかりに加えたもので、
-既定の候補は 7 tier ×（1 variant + 8 期間 × 6 サフィックス）= 343 件になります。
+The default candidate set includes Ultra tiers (`20tb`, `play.20tb`, `ai.ultra`) along with `_eft.acq` and `_ip_75p.acq` suffixes. These were incorporated from product IDs seen in the iOS project [g1-acq](https://github.com/crhywun/g1-acq), yielding 7 tiers x (1 variant + 8 periods x 6 suffixes) = 343 default candidates.
 
-- `_ip_90p` と `_ip_75p` は **90%オフ / 75%オフの有料割引**であり、無料トライアルではありません。
-- `_eft.acq` は無料トライアルに `.acq` が付いた形です。g1-acq の v7.6.0 が
-  Ultra 向けに使う `g1.20tb.1month_eft.acq` と `g1.ai.ultra.1month_eft.acq` がこれに当たります。
-- `.acq` は獲得向けプロモ SKU の目印です（`_ip_90p.acq` のように期間の後ろに付きます）。
-- `g1.30tb` は `g1.<tier>.<期間><サフィックス>` の文法に乗らない裸の SKU です。候補生成には
-  含まれないため、`scan query --skus g1.30tb` のように明示指定します。
+- `_ip_90p` and `_ip_75p` represent **paid 90%-off / 75%-off introductory discounts**, not free trials.
+- `_eft.acq` marks free trials carrying an `.acq` suffix, such as `g1.20tb.1month_eft.acq` and `g1.ai.ultra.1month_eft.acq` used for Ultra in `g1-acq` v7.6.0.
+- `.acq` indicates an acquisition promo SKU (appended after the period suffix, e.g., `_ip_90p.acq`).
+- `g1.30tb` is a bare SKU that does not fit the `g1.<tier>.<period><suffix>` pattern. It is excluded from candidate generation and must be queried explicitly via `scan query --skus g1.30tb`.
 
-Ultra 系 tier と `g1.30tb` が実機で提供されているかは未検証です。候補に含まれることと、
-実際に offer が返ることは別に確かめる必要があります。
+Whether Ultra tiers or `g1.30tb` are offered on your account or region is unverified; being in the candidate list does not guarantee Play returns an offer.
 
-### 表示データの書き換えと課金額
+### Display Rewriting vs. Actual Billing Amount
 
-g1-acq は `one.google.com` の応答を MITM し、本文中の `g1.*` の product id 文字列を
-正規表現で置換します。JSON の解析は行わず、価格・トライアル・適格性の項目には触れません。
+`g1-acq` MITMs responses from `one.google.com` and regex-replaces `g1.*` product ID strings in the HTML body without parsing JSON or altering price, trial, or eligibility fields.
 
-Android 側で購入を決めるのは Play Billing（`queryProductDetailsAsync` → offerToken）です。
-`one.google.com` の表示データを書き換えても課金額は変わらないため、表示の差し替えを
-割引やトライアルの適用として扱わないでください。スキャナはどちらの経路も操作せず、
-offer の内容を読むだけです。
+On Android, actual billing is controlled by Play Billing (`queryProductDetailsAsync` -> `offerToken`).
+Rewriting display data from `one.google.com` does not alter what Play charges, so do not mistake display substitution for an active discount or trial. The scanner touches neither flow and strictly reads offers returned by Play.
 
-## 終了コード
+## Exit Codes
 
-| コード | 意味 |
+| Code | Meaning |
 | ---: | --- |
-| 0 | 成功（一部のバッチがタイムアウトしても、1 バッチでも完了していれば 0） |
-| 1 | 実行エラー（端末に接続できない、読み取り専用の検証に失敗、1 バッチも完了しなかった など） |
-| 2 | 引数の誤り（`--skus` / `--candidates` の未指定、`--timeout` / `--batch-size` が範囲外） |
+| 0 | Success (including partial timeouts as long as at least one batch completed) |
+| 1 | Runtime error (device connection failure, read-only assertion failure, zero completed batches, etc.) |
+| 2 | Invalid arguments (missing `--skus`/`--candidates`, or `--timeout`/`--batch-size` out of range) |
 
-エラーは日本語 1 行で stderr に出ます。トレースバックは表示しません。
+Errors are emitted as a single line to stderr without tracebacks.
 
-## トークンとプライバシー
+## Tokens and Privacy
 
-- offer イベントに含まれる `token` / `offerToken` / `purchaseToken` / `secret` /
-  `email` / `account` は解析時に破棄し、`sku` / `offer_id` / `period` /
-  `micros` / `title` の 5 項目だけを保持します。
-- レポートにも標準出力にもトークンは書き出されません。画面共有や貼り付けの
-  前に、念のため内容を確認してください。
-- レポートは `ultra0-report/`（`.gitignore` に登録済み）に 0600 で保存されます。
+- Any `token`, `offerToken`, `purchaseToken`, `secret`, `email`, or `account` fields in offer events are stripped during parsing; only `sku`, `offer_id`, `period`, `micros`, and `title` are retained.
+- Tokens are never written to reports or stdout. Review output carefully before sharing screenshots or snippets.
+- Reports are stored in `ultra0-report/` (excluded by `.gitignore`) with `0600` permissions.
 
-## 注意事項
+## Caveats
 
-- **`micros=0` は初回（最初の請求段階）の価格を示すだけです**。トライアルの
-  適格性や更新価格を証明するものではありません。実際の請求額・次回のお支払い日は
-  Play の「定期購入」画面で確認してください。
-- 端末への負荷に注意してください。長時間の連続スキャンや、同じ端末での
-  繰り返し実行は避けてください（Frida を長時間動かすと不安定になることがあります）。
-- スキャンの結果は参考値です。登録操作は `step1`〜`step4` を明示的に実行した
-  場合にだけ行われます。
+- **`micros=0` only reflects the initial billing phase price.** It does not prove trial eligibility or reveal renewal pricing. Always verify the actual charge and next payment date on Play's Subscriptions screen.
+- Be mindful of device load. Avoid prolonged continuous scans or repeated runs on the same device (long Frida sessions can cause instability).
+- Scan results are informational only; enrollment actions only occur when running `step1` through `step4` (or `combo run --execute --yes`) explicitly.

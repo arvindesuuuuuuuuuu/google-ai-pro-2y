@@ -1,6 +1,6 @@
-"""CLI サブコマンド（generate / summarize / query）のテスト。
+"""Tests for sku_scanner CLI subcommands (generate / summarize / query).
 
-source_factory による依存注入を使い、frida もデバイスも必要としない。
+Injects source_factory so neither frida nor a device is required.
 """
 
 import io
@@ -34,7 +34,7 @@ class FakeSource:
 
 class CliSubcommandTests(unittest.TestCase):
     def setUp(self):
-        """レポートの既定保存先を一時ディレクトリに向け、repo を汚さない。"""
+        """Point default reports to a temp directory to keep the repo clean."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         patcher = mock.patch.object(
@@ -66,7 +66,7 @@ class CliSubcommandTests(unittest.TestCase):
                     offer_id="offer-1",
                     period="P1M",
                     micros=990000,
-                    title="テストプラン",
+                    title="Test Plan",
                 )
             ]
         )
@@ -105,7 +105,7 @@ class CliSubcommandTests(unittest.TestCase):
                     "id": "offer-1",
                     "period": "P1M",
                     "micros": "990000",
-                    "title": "プラン",
+                    "title": "Plan",
                     "purchaseToken": "dummy-token-value",
                 },
                 {"ev": "log", "message": "ignore me"},

@@ -1,33 +1,30 @@
-# Android 16 / frida 17 で動かすために直したこと
+# Fixes Required for Android 16 / frida 17
 
-元の `ultra0.py` は「Android 12/13 のエミュレータ + root + frida 16.5.9」を前提に書かれています。
-Android 16 の実機（Pixel 7a, KernelSU, frida 17.22.2）では次の 5 点で詰まったので、`ultra0-17.py` と
-`agent/` で回避しています。元ファイル `scripts/ultra0.py` は無改変です。
+The original `ultra0.py` was written for **Android 12/13 emulators + root + frida 16.5.9**.
+On a physical Android 16 device (Pixel 7a, KernelSU, frida 17.22.2), five issues blocked execution and were worked around in `ultra0-17.py` and `agent/`. The original `scripts/ultra0.py` remains untouched.
 
 ---
 
-## 1. frida 16 系が Android 16 で実用にならない
+## 1. frida 16 Is Unusable on Android 16
 
-観測したこと:
+Observed failures:
 
-- frida-server 16.5.9 / 16.7.19 を起動しても、`device.spawn()` が
-  `TimedOutError: unexpectedly timed out while waiting for signal from process` になる
-- `device.enumerate_processes()` が `ProcessNotFoundError: unable to find process with name 'system_server'` になる
-- 端末側には `magisk-frida` モジュールが 17.22.2 を常駐させており、client 16 とはメジャー不一致
+- Starting `frida-server` 16.5.9 / 16.7.19 fails during `device.spawn()` with `TimedOutError: unexpectedly timed out while waiting for signal from process`.
+- `device.enumerate_processes()` fails with `ProcessNotFoundError: unable to find process with name 'system_server'`.
+- Devices with `magisk-frida` installed run 17.22.2 in the background, causing major-version mismatches with a frida 16 client.
 
-frida 17 の変更点（公式リリースノート）:
+Upstream changes in frida 17 (per official release notes):
 
-- `frida-java-bridge` / `frida-objc-bridge` が GumJS から分離され、**同梱されなくなった**
-  → 生の JS を `create_script()` に渡すと `ReferenceError: 'Java' is not defined`
-- 対策として REPL/frida-trace は bridge を同梱するが、Python API から使うには自前でバンドルする必要がある
+- `frida-java-bridge` and `frida-objc-bridge` were split out of GumJS and **are no longer bundled by default**, causing `ReferenceError: 'Java' is not defined` if raw JS is passed to `create_script()`.
+- CLI tools (`frida`, `frida-trace`) bundle the bridge automatically, whereas the Python API requires bundling it yourself.
 
-### 対策: bridge を同梱した IIFE エージェントをビルド
+### Fix: Build an IIFE Agent Bundling `frida-java-bridge`
 
 ```js
-// agent/agent.js（自動生成）
+// agent/agent.js (auto-generated)
 import Java from 'frida-java-bridge';
 globalThis.Java = Java;
-// 以下、元 FRIDA_JS のコード
+// followed by the original FRIDA_JS code
 ```
 
 ```python
@@ -35,98 +32,80 @@ globalThis.Java = Java;
 bundle = frida.Compiler().build("agent.js", project_root=AGENT, bundle_format="iife")
 ```
 
-**`bundle_format="iife"` が必須**です。既定の `esm` は Frida 独自のパッケージ形式
-（`📦 ... ✄` ヘッダ付き）になり、Python から文字列で渡すと
-`frida.InvalidArgumentError: malformed package` になります。
+**`bundle_format="iife"` is mandatory.** The default `esm` output uses Frida's custom package format (with `📦 ... ✄` headers), which triggers `frida.InvalidArgumentError: malformed package` when passed as a raw script string from Python.
 
 ---
 
-## 2. Android 16 では「Object[] を返す JNI 呼び出し」がブロックする
+## 2. JNI Calls Returning `Object[]` Hang on Android 16
 
-症状: 注入自体は成功するが、`Java.registerClass()` から戻ってこない（フリーズ）。
+Symptom: Script injection succeeds, but `Java.registerClass()` never returns (hangs indefinitely).
 
-切り分け結果（同一プロセスで個別に呼び出し）:
+Isolated test calls inside the same process:
 
-| 呼び出し | 戻り型 | 結果 |
+| Call | Return Type | Result |
 |---|---|---|
-| `Class.getName()` | String | OK |
-| `Class.isInterface()` | boolean | OK |
-| `Class.getSuperclass()` | Class | OK |
-| `String.toCharArray()` | char[]（primitive） | OK |
-| **`Class.getInterfaces()`** | **Class[]** | **ハング** |
-| **`ArrayList.toArray()`** | **Object[]** | **ハング** |
-| **`Class.getDeclaredMethods()`** | **Method[]** | **ハング** |
+| `Class.getName()` | `String` | OK |
+| `Class.isInterface()` | `boolean` | OK |
+| `Class.getSuperclass()` | `Class` | OK |
+| `String.toCharArray()` | `char[]` (primitive) | OK |
+| **`Class.getInterfaces()`** | **`Class[]`** | **Hangs** |
+| **`ArrayList.toArray()`** | **`Object[]`** | **Hangs** |
+| **`Class.getDeclaredMethods()`** | **`Method[]`** | **Hangs** |
 
-つまり **参照型の配列を返す JNI 呼び出しだけ**が返ってきません
-（primitive 配列は OK）。frida-java-bridge は `GetArrayLength` / `GetObjectArrayElement`
-（JNIEnv テーブル 171 / 173）を使って配列を JS 配列に変換するため、
-ここが Android 16 の ART と噛み合っていないようです。
+Only **JNI calls returning object reference arrays** hang (primitive arrays work normally). `frida-java-bridge` uses `GetArrayLength` / `GetObjectArrayElement` (JNIEnv table offsets 171 / 173) to convert arrays into JS arrays, which appears incompatible with Android 16 ART.
 
-### 対策: `Java.registerClass` の基底インターフェース展開をスキップ
+### Fix: Skip Base Interface Expansion in `Java.registerClass`
 
-`registerClass` は生成クラスの前に、実装するインターフェースの **親インターフェースを
-`Class.getInterfaces()` で展開**します。Billing のリスナー
-（`PurchasesUpdatedListener` / `BillingClientStateListener` / `ProductDetailsResponseListener` /
-`PurchasesResponseListener`）は基底インターフェースを持たないので、この展開は不要です。
+Before generating a proxy class, `registerClass` normally walks parent interfaces via `Class.getInterfaces()`. Since the Billing listeners (`PurchasesUpdatedListener`, `BillingClientStateListener`, `ProductDetailsResponseListener`, `PurchasesResponseListener`) declare no super-interfaces, expanding them is unnecessary.
 
-`agent/injected.js` 側で `skipInterfaceExpansion: true` を渡し、
-ブリッジ側（`agent/node_modules/frida-java-bridge/lib/class-factory.js`）でスキップします:
+`agent/injected.js` passes `skipInterfaceExpansion: true`, and the bridge (`agent/node_modules/frida-java-bridge/lib/class-factory.js`) skips the traversal:
 
 ```js
       const allInterfaces = interfaces.slice();
       if (spec.skipInterfaceExpansion !== true) {
-        interfaces.forEach(iface => { ... });   // ここだけ従来通り
+        interfaces.forEach(iface => { ... });   // existing behavior only when flag is unset
       }
 ```
 
-パッチは `scripts/apply_bridge_patch.py` が冪等に適用します
-（バージョンは `agent/package.json` で `7.1.0` に固定）。
+`scripts/apply_bridge_patch.py` applies this patch idempotently (`frida-java-bridge` version is pinned to `7.1.0` in `agent/package.json`).
 
 ---
 
-## 3. Android 14+ は「書き込み可能な dex ファイル」を拒否する
+## 3. Android 14+ Rejects Writable Dex Files
 
 ```
 java.lang.SecurityException: Writable dex file '/data/local/tmp/module_521.apk' is not allowed.
 ```
 
-`DexClassLoader` に渡す課金モジュール APK が書き込み可能だと弾かれます。
-`adb push` 直後は 0666 なので、**444 に落とす**必要があります。
+Loading the billing module APK via `DexClassLoader` fails if the file is writable. Because `adb push` leaves permissions at `0666`, it must be locked down to `444`.
 
-`ultra0-17.py` では `ensure_module_apk()` で push 後に自動で `chmod 444` します。
-
----
-
-## 4. チェックアウトの UI 文言が日本語だと判定できない
-
-元の `confirm_zero()` は中国語（`订阅` / `免费试用`）と英語（`Subscribe`）だけを見ていました。
-日本語ロケールでは:
-
-- ボタン: 「定期購入」「登録する」
-- 通貨: `￥0` / `JP¥0`（元の正規表現は `$` `€` `£` などで `¥` が無い）
-- 期間: 「12か月間の無料トライアル」
-
-`ultra0-17.py` では判定を ja/en/zh のニードル + `¥` 対応に拡張し、
-`Button` クラスを優先してタップする `tap_button()` を追加しています。
-また失敗時に画面テキストをログへ出すようにしました。
+`ultra0-17.py` automatically runs `chmod 444` after pushing inside `ensure_module_apk()`.
 
 ---
 
-## 5. その他の実務的な修正
+## 4. Non-English Checkout UI Strings Needed Locale Expansion
 
-- **アプリ起動待ち**: 7 秒固定 → `pidof` を 20 秒ポーリング（`app_not_started` 対策）
-- **メッセージ型ガード**: ブリッジのデバッグ `send("reg:...")` のような文字列 payload で
-  `AttributeError: 'str' object has no attribute 'get'` にならないよう `on_msg` をガード
-- **frida-server のバージョン整合**: クライアント 17.22.2 に合わせる。
-  モジュール常駐と衝突する場合は `scripts/fix_frida.sh`
+The original `confirm_zero()` only checked Chinese and English strings (`Subscribe`, plus Chinese subscribe/free-trial strings). Under a Japanese locale, Google Play displays:
+
+- Action buttons: localized Japanese labels for "Subscribe" / "Sign up"
+- Currency: `¥0` / `JP¥0` (the original regex only matched `$`, `€`, `£`, etc., missing `¥`)
+- Duration text: Japanese free-trial phrasing (e.g., "12-month free trial")
+
+`ultra0-17.py` expands matching to `ja/en/zh` needles plus `¥` currency detection, adds `tap_button()` to prioritize `Button` widgets, and logs screen text on detection failures.
 
 ---
 
-## 端末側で観測した副作用
+## 5. Other Practical Fixes
 
-- KernelSU + LSPosed + Android 16 の実機で、Frida 注入を何度も繰り返すと
-  **ブートアニメーションで止まる**ことが数回ありました（電源長押しで復帰、サブスク状態は無事）
-- USB 接続が時々落ちる（ハブ経由）。Wi-Fi ADB（`adb tcpip 5555`）を併用すると安定
+- **App startup wait**: Replaced fixed 7-second sleep with 20-second `pidof` polling (prevents `app_not_started`).
+- **Message payload guard**: Guarded `on_msg` against raw string payloads (such as bridge debug `send("reg:...")` events) that previously threw `AttributeError: 'str' object has no attribute 'get'`.
+- **frida-server version alignment**: Matched server to client `17.22.2`; added `scripts/fix_frida.sh` to resolve conflicts with resident root modules.
 
-再現性のため、必要な作業が終わったら `pkill -x frida-server` と
-`magisk-frida` モジュールの無効化を推奨します。
+---
+
+## Device-Side Side Effects Observed
+
+- On a physical KernelSU + LSPosed + Android 16 device, repeated Frida injections occasionally left the phone **stuck on the boot animation** (recovered via long-press power reboot; subscription state stayed intact).
+- USB connections intermittently dropped through hubs; pairing with Wi-Fi ADB (`adb tcpip 5555`) improved reliability.
+
+For stability, stop `frida-server` (`pkill -x frida-server`) and disable `magisk-frida` once you are done.

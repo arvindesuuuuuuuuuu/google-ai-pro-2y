@@ -1,239 +1,204 @@
-# コンボプランナー（`scripts/combo.py`）
+# Combo Planner (`scripts/combo.py`)
 
-Google AI Pro の無料オファーを、アカウントの現在の状態に合わせて積み上げるための
-計画・実行ツールです。既定はドライランで、支払いの確定は必ず人が行います。
+A planning and execution tool for stacking Google AI Pro free offers based on your account's current state. It defaults to dry-run mode, and payment confirmation is always manual.
 
-- 何をどの順で買うか（プラン）は `scripts/combo_core.py` の純粋ロジックが決めます
-- 端末を読むのは `--device` を付けたときだけです
-- 実際に実行するには `--execute` と `--yes` の両方が必要です
+- Pure planning logic in `scripts/combo_core.py` decides what to apply and in what order.
+- The device is only queried when `--device` is passed.
+- Actual execution requires both `--execute` and `--yes`.
 
-## 1. 目的
+## 1. Purpose
 
-2026-11-24 の実測（Pixel 7a / Google AI Pro 5TB / 有効期限 2028-11-21）では、
+Measurements on 2026-11-24 (Pixel 7a / Google AI Pro 5TB / valid until 2028-11-21) observed both:
 
-- 単体の無料オファー: `g1.2tb.ai.{2,3,4,6,12,15,18}months_eft`（`eft-*`）
-- 積み上げ用の無料オファー: `g1.2tb.ai.subs_variant` の
-  `12months-eft` / `6months-eft` / `6months-eft-2` / `6months-eft-ss-2026`
+- Standalone free offers: `g1.2tb.ai.{2,3,4,6,12,15,18}months_eft` (`eft-*`)
+- Stackable free offers under `g1.2tb.ai.subs_variant`: `12months-eft`, `6months-eft`, `6months-eft-2`, and `6months-eft-ss-2026`
 
-が見つかっています。ただし同じ手順が全員に効くとは限りません。
-新規アカウント、期限切れ、すでに有効なサブスク、の 3 つで取るべき行動が違うため、
-このツールはまず状態を判定し、積み上げが可能かを確認してから実行します。
+However, the same sequence does not work identically for every account.
+Because `fresh`, `expired`, and `active` subscriptions require different actions, this tool first detects account state and checks stackability before executing.
 
-## 2. 3 つのアカウント状態
+## 2. Three Account States
 
-状態は Play の `library.db`（`ownership` テーブル）から判定します。
-サブスクの所有行は `doc_id` が
-`subs:com.google.android.apps.subscriptions.red:<sku>` の形で、
-`subs_valid_until_time`（epoch ミリ秒）が現在時刻より後ろなら「有効」です。
+Account state is read from Google Play's `library.db` (`ownership` table).
+Subscription ownership rows have `doc_id` formatted as `subs:com.google.android.apps.subscriptions.red:<sku>`, and are treated as active when `subs_valid_until_time` (epoch milliseconds) is in the future.
 
-| 状態 | 判定 | 最初にやること |
+| State | Detection Rule | Initial Action |
 |---|---|---|
-| `fresh` | サブスクの所有行が 1 件もない | 最長の単体無料オファー（`18months_eft`）で新規登録 |
-| `active` | 有効な所有行が 1 件以上ある | 積み上げ可否を確認し、可能なら `subs_variant` の無料オファーを積む |
-| `expired` | 所有行はあるが、すべて期限切れ | 新規登録として扱う（`18months_eft` から） |
+| `fresh` | Zero subscription ownership rows | Start a new subscription with the longest standalone free offer (`18months_eft`) |
+| `active` | One or more valid ownership rows | Check stackability; if eligible, stack free `subs_variant` offers |
+| `expired` | Ownership rows exist, all expired | Treat as a new subscription starting from `18months_eft` |
 
-`fresh` と `expired` はどちらも「新規登録から始める」点は同じですが、
-表示と判定理由を分けているので、期限切れの場合は「なぜ新規なのか」が分かります。
+Although `fresh` and `expired` both start from a new subscription, keeping them distinct makes it clear why an expired account starts fresh.
 
-## 3. 「積み上げ可能」の判定
+## 3. Determining Stackability
 
-判定は `stack_is_possible()` の 1 か所に集約しています。
+Stackability is centralized in `stack_is_possible()`:
 
-| 状態 | 積み上げ用の無料オファー | 自動更新 | 可否 | 表示される理由 |
+| State | Stackable Free Offers | Auto-Renew | Stackable | Displayed Reason |
 |---|---|---|---|---|
-| fresh | （不問） | （不問） | 可 | 新規登録として最長の無料オファーから開始できます |
-| expired | （不問） | （不問） | 可 | 期限切れのため新規登録として扱えます |
-| active | あり | オン | 可 | 有効なサブスクがあるため積み上げ可能 |
-| active | あり | オフ | 不可 | 自動更新がオフのため積み上げできません（先に解約しないこと） |
-| active | なし | （不問） | 不可 | 積み上げ可能な無料オファーが見つかりません |
+| `fresh` | (any) | (any) | Yes | Can start as a new subscription with the longest free offer |
+| `expired` | (any) | (any) | Yes | Expired subscription can be treated as a new registration |
+| `active` | Present | ON | Yes | Active subscription present; eligible for stacking |
+| `active` | Present | OFF | No | Auto-renew is off; stacking unavailable (do not cancel early) |
+| `active` | None | (any) | No | No stackable free offers found |
 
-「積み上げ用の無料オファー」は、`sku` が `.subs_variant` で終わり、`offer_id` が
-`null`（通常プラン）ではなく、`micros` がちょうど 0 で、期間が読めるものだけを数えます。
+Only entries whose `sku` ends with `.subs_variant`, whose `offer_id` is not `null` (standard base plan), whose `micros` equals `0`, and whose period is parseable count as stackable free offers.
 
-自動更新の状態は `library.db` からは確実に読めないため、
-`--auto-renew` / `--no-auto-renew` で人が指定します（既定はオン）。
-判定は「オンと仮定した場合」であることを意識してください。Play の
-「お支払いと定期購入」で自動更新がオンであることを確認してから実行してください。
+Because auto-renew state cannot be reliably read from `library.db`, you pass `--auto-renew` or `--no-auto-renew` manually (default: ON).
+Keep in mind that the default assumes auto-renew is ON -- verify under Google Play > "Payments & subscriptions" before executing.
 
-## 4. 人の介在（支払い）
+## 4. Human-in-the-Loop Payment
 
-スクリプトが行うのは**課金画面を開くところまで**です。金額の確認と支払いの確定は人が行います。
+The script stops at **opening the billing sheet**. Reviewing the price and confirming payment is strictly done by a human:
 
-1. スクリプトが対象 SKU / offerId で課金画面を開く（`launchBillingFlow` まで）
-2. 端末の画面で金額が 0 円であること、適用される期間を人が確認する
-3. 人が支払いを完了する
-4. ターミナルで Enter を押す
-5. スクリプトが `library.db` を読み直し、有効期限が伸びたかを確認する
-   - 1 日以上伸びていれば成功として次のステップへ進みます
-     （Play が所有行を書き直して数時間だけ値が動くことがあるため、ミリ秒の僅差は成功と見なしません）
-   - 伸びていなければ、そのオファーは使用済みか適用条件外とみなし、**飛ばして次へ進みます**
-     （「途中までプランを持っている人」は、すでに使ったオファーが候補に残るためです）
-   - `--stop-on-failure` を付けたときだけ、最初の失敗で中断します
-   - 1 ステップも成功しなかった場合は、終了コードが非ゼロになります
+1. Script opens the billing flow for the target SKU / `offerId` (up to `launchBillingFlow`)
+2. User visually confirms price = 0 and the applied duration on the device screen
+3. User completes payment manually
+4. User presses Enter in the terminal
+5. Script re-reads `library.db` to check whether the expiration date extended:
+   - If extended by at least 1 day, marks the step successful and moves to the next step (smaller millisecond shifts from Play rewriting ownership rows do not count as success).
+   - If unchanged, assumes the offer was already used or ineligible and **skips to the next offer** (important for partial stacks where previously claimed offers still appear in query results).
+   - Pass `--stop-on-failure` to halt immediately on the first non-extending step.
+   - Exit code is non-zero if zero steps succeed.
 
-次のことは行いません。
+The script never performs any of the following:
 
-- 「登録」「Subscribe」の自動タップ
-- `ultra0-17.confirm_zero()` / `add_card()` / `launch_app()` の呼び出し
-- 支払い前の確認なしの続行
+- Auto-tapping "Subscribe"
+- Calling `ultra0-17.confirm_zero()`, `add_card()`, or `launch_app()`
+- Proceeding without waiting for user confirmation
 
-注入する JS は、読み取り専用フラグ（`var LIST_ONLY=true;`）が含まれていないこと、
-`PRODUCTS` と `PREFER` のリテラルがちょうど 1 回ずつ差し替わったことを検証してから
-読み込みます。どれか満たさなければ、その場で中止します。
+Before injecting JS, the runner verifies that `var LIST_ONLY=true;` is absent and that both `PRODUCTS` and `PREFER` literals were substituted exactly once. If any check fails, it aborts immediately.
 
-### 4-1. 積み上げの仕組み（purchaseToken を直接渡す）
+### 4-1. How Stacking Works (Passing `purchaseToken` Directly)
 
-積み上げ（`subs_variant` の別 offer を重ねる操作）は、`BillingFlowParams.SubscriptionUpdateParams`
-の `setOldPurchaseToken()` に**既存サブスクの購入トークン**を渡さないと成立しません。
-このツールは、そのトークンを Play の `library.db`（`ownership` テーブルの `inapp_purchase_data`）から
-読んで渡します。
+Stacking (applying another offer on `subs_variant`) requires passing the **existing subscription's purchase token** to `BillingFlowParams.SubscriptionUpdateParams.setOldPurchaseToken()`.
+This tool reads that token from `library.db` (`inapp_purchase_data` in the `ownership` table).
 
-- `queryPurchasesAsync` は使いません。実機（Android 16 + 課金モジュール 5.x）では
-  コールバックが返らず、積み上げが途中で止まったためです。実際に動いた経路だけを残しています。
-- 購入トークンは表示しません。標準出力にもログにもレポートにも出さず、
-  Frida エージェントに渡す文字列としてだけ使います。
-- 読み取りに使う `library.db` のコピーは、端末側（`/data/local/tmp/`）とホスト側（一時ディレクトリ）の
-  両方を、成功・失敗にかかわらず `finally` で削除します。
-- `--account` を指定しないと、複数アカウントが混ざったときにトークンを取り違えるおそれがあります。
-  所有行が複数ある場合の扱いは「6-6. アカウント違い」を参照してください。
+- It intentionally avoids `queryPurchasesAsync`, which stalled without firing callbacks on live Android 16 + billing module 5.x devices. Only the verified `library.db` path is used.
+- The purchase token is never printed to stdout, logs, or reports; it is passed purely in-memory to the Frida agent.
+- Temporary copies of `library.db` on both device (`/data/local/tmp/`) and host (temp dir) are deleted in a `finally` block regardless of success or failure.
+- Without `--account`, multiple Play accounts on the same device can cause token mix-ups. See "6-6. Account Mismatches" below.
 
-### 4-2. Google One が前面に無いと課金画面は開かない
+### 4-2. Google One Must Be in the Foreground
 
-課金画面は、Google One（`com.google.android.apps.subscriptions.red`）の**生きた Activity** からしか
-開けません。前面が別のアプリだと、エージェントは `no_activity` を送って何も表示せずに終わります。
+Billing sheets can only launch from a **live Activity** of Google One (`com.google.android.apps.subscriptions.red`).
+If another app is in the foreground, the agent returns `no_activity` and exits without showing a sheet.
 
-実行前に、端末で Google One を開いて前面に出してください。
-`--open-app` を付けると、前面に無いときだけ adb（`monkey`）で Google One を前面に出します。
-既定では前面化しません（勝手にアプリを起動しない方針のため）。
+Open Google One and leave it in the foreground before running.
+Pass `--open-app` to have `adb` (`monkey`) bring Google One to the foreground only when needed (disabled by default to avoid unsolicited app launches).
 
-## 5. コマンド
+## 5. Commands
 
 ```bash
-# 計画だけ見る（端末を読むので --device が必要）
+# View plan only (requires --device to inspect the device)
 ./scripts/run.sh combo plan --device
 
-# アカウント違いが怖いとき
+# Specify an account to guard against multi-account mix-ups
 ./scripts/run.sh combo plan --device --account you@example.com
 
-# 実行（1 ステップずつ Enter で確認）
+# Execute (wait for Enter after each step)
 ./scripts/run.sh combo run --device --execute --yes
 
-# 1 つでも期限が伸びなければ、その場で止める（既定は飛ばして続行）
+# Stop immediately if any step fails to extend expiration (default skips and continues)
 ./scripts/run.sh combo run --device --execute --yes --stop-on-failure
 
-# Enter 待ちをせず、指定秒数だけ待つ（自動化・検証用）
+# Wait a fixed number of seconds instead of pressing Enter (automation/testing)
 ./scripts/run.sh combo run --device --execute --yes \
   --non-interactive --wait-seconds 30
 
-# 自動更新がオフだと分かっているとき（積み上げ不可と表示される）
+# Simulate auto-renew OFF (reports stacking unavailable)
 ./scripts/run.sh combo plan --device --no-auto-renew
 
-# Google One を開き忘れそうなとき（前面に無いときだけ前面化する）
+# Bring Google One to the foreground automatically if not active
 ./scripts/run.sh combo run --device --execute --yes --open-app
 
-# ステップ数を絞る（既定 4）
+# Limit step count (default: 4)
 ./scripts/run.sh combo plan --device --max-steps 2
 ```
 
-`combo` はサブコマンドを省略すると `plan` として動きます。
+Omitting the subcommand defaults `combo` to `plan`.
 
-### 出力例（active / 有効期限 2028-11-21）
+### Sample Output (`active` / Valid Until 2028-11-21)
 
 ```text
-Google AI Pro 無料オファー コンボプラン
-----------------------------------------
-現在の有効期限: 2028-11-21
-判定: 有効なサブスクがあるため積み上げ可能
-実行プラン:
-1. [積み上げ] g1.2tb.ai.subs_variant / 12months-eft / +12ヶ月 → 2029-11-21
-2. [積み上げ] g1.2tb.ai.subs_variant / 6months-eft / +6ヶ月 → 2030-05-21
-3. [積み上げ] g1.2tb.ai.subs_variant / 6months-eft-2 / +6ヶ月 → 2030-11-21
-注意: micros=0 は最初の請求段階の価格が 0 であることしか示しません。
+Google AI Pro Free Offer Combo Plan
+-----------------------------------
+Current expiration: 2028-11-21
+Status: Stackable (active subscription detected)
+Execution plan:
+1. [Stack] g1.2tb.ai.subs_variant / 12months-eft / +12m -> 2029-11-21
+2. [Stack] g1.2tb.ai.subs_variant / 6months-eft / +6m -> 2030-05-21
+3. [Stack] g1.2tb.ai.subs_variant / 6months-eft-2 / +6m -> 2030-11-21
+Note: micros=0 only indicates that the initial billing phase price is 0.
 ...
 ```
 
-`expected_end_ms` は暦月で積んだ見込みです。実際の日付は Play の画面で確認してください。
+`expected_end_ms` estimates calendar-month extensions; always confirm the actual date on Play's UI.
 
-### 終了コード
+### Exit Codes
 
-| コード | 意味 |
+| Code | Meaning |
 |---:|---|
-| 0 | 正常（plan の表示、または run の全ステップ完了） |
-| 1 | 失敗（有効期限が伸びたステップが 1 つも無い、実行条件を満たさない等） |
-| 2 | 使い方の誤り（`run` に `--execute --yes` が無い） |
-| 3 | 端末を読めない（`--device` が無い、または端末に接続できない） |
+| 0 | Success (`plan` displayed, or `run` completed with at least one extension) |
+| 1 | Failure (no step extended expiration, preconditions unmet, etc.) |
+| 2 | Usage error (`run` invoked without both `--execute` and `--yes`) |
+| 3 | Device unreadable (`--device` omitted or device unreachable) |
 
-### なぜ `--device` が既定で無効なのか
+### Why `--device` Is Opt-In by Default
 
-`plan` は読み取りだけですが、意図しない端末（別アカウント・別の Google One）を
-読んでしまう事故を避けるため、端末アクセスは明示的に opt-in にしています。
-`--device` を付けない場合、スクリプトは端末にも adb にも触れず、その旨を表示して
-終了コード 3 で終わります。
+Although `plan` is read-only, device access requires explicit `--device` opt-in to avoid accidentally inspecting an unintended phone or Play account.
+Without `--device`, the script touches neither the device nor `adb`, explains why, and exits with code 3.
 
-## 6. リスクと注意
+## 6. Risks and Caveats
 
-### 6-1. 置き換え（replace）と積み上げ（stack）は別物
+### 6-1. Replacement vs. Stacking
 
-**`g1.2tb.ai.18months_eft` は `g1.2tb.ai.subs_variant` とは別の SKU です。**
-有効なサブスクがある状態でこの SKU を買うと、積み上げではなく
-現在のサブスクの置き換え（または購入不可）になることがあります。
-そのため、状態が `active` のときは `new_subscription`（新規登録）のアクションを
-絶対に作りません。`fresh` / `expired` のときだけ、最長の単体オファーから始めます。
+**`g1.2tb.ai.18months_eft` is a different SKU from `g1.2tb.ai.subs_variant`.**
+Buying `18months_eft` while an active subscription exists may replace your current subscription (or be rejected) instead of stacking.
+Accordingly, `combo` never schedules a `new_subscription` action when state is `active`; it only starts with the longest standalone offer for `fresh` or `expired` accounts.
 
-逆に `subs_variant` の中の別 offer（`12months-eft` → `6months-eft` …）は、
-同じ SKU の subscription upgrade として積み上がる想定です。
-それでも Play 側の挙動は変わりうるので、各ステップ後に必ず期限を確認します。
+Conversely, switching between offers under `subs_variant` (`12months-eft` -> `6months-eft`, etc.) performs a same-SKU subscription upgrade designed to stack.
+Play's behavior can still vary by account/region, so always verify the expiration date after every step.
 
-### 6-2. `micros=0` は適格性の証明ではない
+### 6-2. `micros=0` Does Not Prove Eligibility
 
-`micros=0` は「最初の請求段階の価格が 0」であることしか示しません。
-無料トライアルの対象かどうか、更新後にいくら請求されるかは分かりません。
-実際の金額と日付は、必ず Play の課金画面で確認してください。
-この注意はプラン表示にも毎回出します。
+`micros=0` only reports an initial phase price of 0.
+It does not guarantee free-trial eligibility or disclose post-trial renewal prices.
+Always confirm actual amounts and dates on Play's checkout sheet. This warning is also printed with every plan.
 
-### 6-3. 解約の順序
+### 6-3. Cancellation Order
 
-積み上げは「サブスクが有効（自動更新オン）」であることが前提です。
-先に解約すると、新しい購入が「期限後の転換」になりトライアルが付かない、
-あるいは積み上げできないことがあります。**実行前に解約しないでください。**
+Stacking requires an **active subscription (auto-renew ON)**.
+If you cancel first, subsequent purchases may become end-of-period conversions without applying a trial or may fail to stack. **Do not cancel before running.**
 
-### 6-4. 端末への負荷
+### 6-4. Device Load
 
-frida の注入、Play の課金フロー、`library.db` のコピーを短時間に繰り返すと、
-Play が一時的なエラーを返したり、端末が重くなったりします。
-1 ステップ終わるごとに画面を確認し、続けて失敗する場合は時間を置いてください。
-`--wait-seconds` は非対話時の待ち時間で、端末の処理が終わるのを待つためのものです。
+Repeatedly injecting Frida, launching Play billing sheets, and copying `library.db` in rapid succession can trigger transient Play errors or slow down the device.
+Check the screen after each step, and pause if errors occur consecutively.
+`--wait-seconds` gives the device time to finish updating state during non-interactive runs.
 
-### 6-5. 二重購入
+### 6-5. Duplicate Purchases
 
-同じオファーを続けて 2 回実行しないでください。失敗したステップは飛ばして次の
-オファーを試すため、続けて別の課金画面が開くことがあります。人間側も、Play の
-「次回のお支払い」がずれていることを確認してください。
+Do not execute the same offer twice in a row. Because failed steps skip ahead to the next offer, another checkout sheet may appear right afterward -- check Play's "Next payment" date yourself before confirming.
 
-### 6-6. アカウント違い
+### 6-6. Account Mismatches
 
-`--account` を渡すと、`library.db` の所有行の `account` と比較して、
-違えば警告します。UI をタップしてアカウントを読む既存ヘルパー
-（`current_play_account()`）は、支払い以外で画面操作をしない方針に合わせて使っていません。
-そのため「所有行が 1 件もない新規アカウント」では照合できず、
-その旨の警告になります。Play にログイン中のアカウントは目視で確認してください。
+Passing `--account` compares against the `account` column in `library.db` ownership rows and warns on mismatch.
+The existing UI-tapping helper (`current_play_account()`) is deliberately unused to avoid driving UI outside payment flows, which means accounts with zero ownership rows (`fresh`) cannot be cross-checked automatically and trigger a warning instead. Visually verify the active account in Google Play.
 
-所有行に複数アカウントが見つかった場合、`run` は `--account` が無いと実行しません。
-混ざったまま進むと、別アカウントの期限を比べて「伸びた」と誤判定するため、実行前に中止します
-（`plan` は表示だけなので止まりません）。対象を `--account you@example.com` の形で明示してください。
+If ownership rows span multiple accounts, `run` refuses to proceed unless `--account` is specified, preventing false extension detections across mixed accounts (`plan` still prints without blocking). Specify the target explicitly with `--account you@example.com`.
 
-## 7. 実装の分担
+## 7. Implementation Split
 
-| ファイル | 役割 |
+| File | Role |
 |---|---|
-| `scripts/combo_core.py` | 状態判定・プラン組み立て・表示（frida / adb 非依存） |
-| `scripts/combo.py` | CLI、`library.db` の読み取り、offer 読み取り、課金画面を開く実行者 |
-| `scripts/sku_scanner.py` | offer の読み取り（`list_only`）をそのまま再利用 |
-| `tests/test_combo_*.py` | 端末も frida も使わない単体テスト |
+| `scripts/combo_core.py` | State detection, plan construction, formatting (no frida/adb dependency) |
+| `scripts/combo.py` | CLI, `library.db` reader, offer query wrapper, checkout sheet runner |
+| `scripts/sku_scanner.py` | Reused for `list_only` offer queries |
+| `tests/test_combo_*.py` | Unit tests requiring no device or frida |
 
-## 8. 関連ドキュメント
+## 8. Related Docs
 
-- [SETUP.md](SETUP.md) — 環境構築と実行順序
-- [SKU-SCANNER.md](SKU-SCANNER.md) — offer を読むだけのスキャナ
-- [RESULTS.md](RESULTS.md) — 実測ログ（期限の伸び方）
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — エラー別の対処
+- [SETUP.md](SETUP.md) -- Environment setup and execution order
+- [SKU-SCANNER.md](SKU-SCANNER.md) -- Read-only offer scanner
+- [RESULTS.md](RESULTS.md) -- Measured run logs (expiration tracking)
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) -- Error-specific remedies

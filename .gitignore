@@ -6,15 +6,15 @@ __pycache__/
 
 # Frida agent
 agent/node_modules/
-# 同梱バンドルはコミットする（node/npm が無い環境でも動かすため）
+# Commit the prebuilt bundle so environments without node/npm can run it
 # agent/agent.iife.js
 
 # adb
 tools/
 
-# 実行結果
+# Run outputs
 ultra0-report/
 
-# 推敲ツール（yomiyasu）の生成物
+# Proofreading tool (yomiyasu) outputs
 .yomiyasu/
 *.final.md

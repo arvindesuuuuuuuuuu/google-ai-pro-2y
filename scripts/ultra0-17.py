@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Google AI Ultra 0 元开通 —— 一键脚本
+"""Google AI Ultra $0 Trial Activation -- One-click Script
 
-用法（三步）：
-    python3 ultra0.py --check            # 1. 环境自检
-    python3 ultra0.py accounts.txt       # 2. 批量跑号
-    python3 ultra0.py --account a@b.com:密码:2FA密钥   # 单号
+Usage (three steps):
+    python3 ultra0-17.py --check                      # 1. Environment self-check
+    python3 ultra0-17.py accounts.txt                 # 2. Batch run accounts
+    python3 ultra0-17.py --account a@b.com:pass:2fa   # Single account
 
-accounts.txt 每行一个号：
+accounts.txt format (one per line):
     email----password----recovery----totp
 
-前置条件：
-    - 一台已 root 的安卓手机，USB 连接，开了 USB 调试
-    - 手机上已登录目标 Google 账号（脚本也能自动加）
-    - 电脑装了 Python3 + frida（pip install frida）
+Prerequisites:
+    - A rooted Android phone connected via USB with USB debugging enabled
+    - Target Google account signed in on device (script can also add it automatically)
+    - Python 3 + frida installed on host (pip install frida)
 
-脚本会自动：推 frida-server、推 BillingClient 模块、查 offer、用 eft-12month 拉起收银台，
-只有在确认金额为 0 时才点「订阅」。
+The script pushes frida-server and the BillingClient module, queries offers,
+launches checkout with eft-12month, and clicks Subscribe only when $0 is verified.
 """
 import argparse, base64, hashlib, hmac, json, os, re, select, struct, subprocess, sys, threading, time
 from pathlib import Path
 import tempfile
 
-# 人工确认闸门：网页版点「我已完成，继续」，命令行按回车
+# Manual verification gate: click "I have completed, continue" in web UI, or press Enter in CLI
 HUMAN_EVENT = threading.Event()
 WAITING = {"on": False, "msg": ""}
 
 
 def wait_human(msg: str, timeout: int = 600) -> bool:
-    """遇到人机验证时暂停，等人处理完再继续。"""
+    """Pause on captcha/human verification until user completes it."""
     WAITING["on"] = True
     WAITING["msg"] = msg
-    print(f"\n⏸  需要你操作：{msg}")
-    print("   完成后按【回车】继续（网页版点「我已完成，继续」）", flush=True)
+    print(f"\n⏸  Action required: {msg}")
+    print("   Press [Enter] once done to continue", flush=True)
     HUMAN_EVENT.clear()
     end = time.time() + timeout
     while time.time() < end:
@@ -46,10 +46,10 @@ def wait_human(msg: str, timeout: int = 600) -> bool:
         except Exception:
             time.sleep(0.5)
     WAITING["on"] = False
-    print("▶  继续执行", flush=True)
+    print("▶  Resuming", flush=True)
     return True
 
-# ---------- 多言語UIニードル（ja/en/zh） ----------
+# ---------- Multi-locale UI needles (ja/en/zh) ----------
 SUB_NEEDLES = ("定期購入", "登録する", "Subscribe", "订阅", "サブスクリプション")
 INELIGIBLE_NEEDLES = ("不符合免费试用条件", "not eligible", "対象外", "ご利用いただけません",
                       "ご利用になれません")
@@ -58,12 +58,12 @@ PRICE_PAT = re.compile(r"(US\$|HK\$|NT\$|JP¥|¥|￥|\$|€|£)\s?([\d.,]+)")
 TRIAL_PAT = re.compile(r"(無料トライアル|無料|free trial|免费试用)[^\n]{0,16}?(\d+)\s*"
                        r"(か月|ヶ月|カ月|か月間|日間|日|months?|month|个月|年)")
 
-# ---------- 常量 ----------
+# ---------- Constants ----------
 PKG = "com.google.android.apps.subscriptions.red"   # Google One
-VENDING = "com.android.vending"                     # Play 商店
+VENDING = "com.android.vending"                     # Play Store
 GMS = "com.google.android.gms"
 PRODUCT = "g1.play.20tb"                            # Ultra 5x / 20TB
-OFFER = "eft-12month"                               # 首年免费
+OFFER = "eft-12month"                               # First year free
 MODULE_REMOTE = "/data/local/tmp/module_521.apk"
 FRIDA_REMOTE = "/data/local/tmp/frida-server"
 REPORT_DIR = Path("ultra0-report")
@@ -78,12 +78,13 @@ ADB_CANDIDATES = [
     r"C:\Program Files (x86)\Netease\MuMuPlayer-12.0\shell\adb.exe",
     "adb.exe", "adb",
     # macOS / Linux
+    os.path.expanduser("~/Android/Sdk/platform-tools/adb"),
     os.path.expanduser("~/Library/Android/sdk/platform-tools/adb"),
     "/opt/homebrew/bin/adb", "/usr/local/bin/adb", "/usr/bin/adb",
 ]
 
 
-# ---------- 基础工具 ----------
+# ---------- Utilities ----------
 def find_adb() -> str:
     for c in ADB_CANDIDATES:
         if not c:
@@ -94,7 +95,7 @@ def find_adb() -> str:
                 return c
             except Exception:
                 continue
-    sys.exit("❌ 找不到 adb，请安装 Android platform-tools 并加入 PATH")
+    sys.exit("❌ adb not found; install Android platform-tools and add it to PATH")
 
 
 ADB = None
@@ -125,13 +126,13 @@ def warn(msg):
     print(f"   ⚠️  {msg}", flush=True)
 
 
-# ---------- 设备 ----------
+# ---------- Device ----------
 def pick_device():
     global SERIAL
     out = sh("devices")
     lines = [l for l in out.splitlines()[1:] if "\tdevice" in l]
     if not lines:
-        # 模拟器：自动尝试常见端口
+        # Emulator: auto-probe common ADB ports
         for port in ("16384", "7555", "16416", "62001", "21503"):
             try:
                 sh("connect", f"127.0.0.1:{port}", timeout=10)
@@ -140,12 +141,12 @@ def pick_device():
             out = sh("devices")
             lines = [l for l in out.splitlines()[1:] if "\tdevice" in l]
             if lines:
-                note(f"已连接模拟器 127.0.0.1:{port}")
+                note(f"Connected emulator 127.0.0.1:{port}")
                 break
     if not lines:
-        sys.exit("❌ 没有检测到设备。MuMu 请确认已启动、开了 ADB 调试（设置里），或用 ADB_PATH 指定 adb。")
+        sys.exit("❌ No device detected. Ensure MuMu is running with ADB debugging enabled, or set ADB_PATH.")
     SERIAL = lines[0].split("\t")[0]
-    ok(f"设备已连接：{SERIAL}")
+    ok(f"Device connected: {SERIAL}")
 
 
 def ensure_root():
@@ -157,13 +158,13 @@ def ensure_root():
 
     uid = _id()
     if "uid=0" not in uid:
-        # 模拟器常见：adb root 把 adbd 提权，无需 su
+        # Common on emulators: elevate adbd via adb root without su
         try:
             sh("root", timeout=20)
             time.sleep(2)
             uid = _id()
             if "uid=0" in uid:
-                note("已通过 adb root 提权")
+                note("Elevated via adb root")
         except Exception:
             pass
     if "uid=0" not in uid:
@@ -172,30 +173,30 @@ def ensure_root():
         except Exception:
             uid = ""
     if "uid=0" not in uid:
-        sys.exit("❌ 设备没有 root 权限。MuMu：设置里打开「ROOT 权限」并重启；或先手动执行 adb root。")
+        sys.exit("❌ Device lacks root access. For MuMu, enable ROOT permission in settings and restart, or run `adb root` first.")
 
 
 def ensure_frida_server():
     running = "frida-server" in sh("shell", "ps -A | grep frida-server || true")
     if running:
-        ok("frida-server 已在运行")
+        ok("frida-server is already running")
         return
     if not sh("shell", f"ls {FRIDA_REMOTE} 2>/dev/null"):
-        warn("设备上没有 frida-server，尝试用本地 frida 版本自动下载…")
+        warn("frida-server missing on device; downloading matching version automatically...")
         try:
             import frida
             ver = frida.__version__
         except Exception:
-            sys.exit("❌ 电脑没装 frida。请先执行：pip3 install frida")
+            sys.exit("❌ frida is not installed on host. Run: pip3 install frida")
         abi = sh("shell", "getprop ro.product.cpu.abi").strip() or "arm64-v8a"
         arch = {"arm64-v8a": "arm64", "armeabi-v7a": "arm", "armeabi": "arm",
                 "x86_64": "x86_64", "x86": "x86"}.get(abi, "arm64")
-        note(f"设备 ABI={abi} → frida-server-{ver}-android-{arch}")
+        note(f"Device ABI={abi} -> frida-server-{ver}-android-{arch}")
         url = (f"https://github.com/frida/frida/releases/download/{ver}/"
                f"frida-server-{ver}-android-{arch}.xz")
         import urllib.request, lzma
         tmp = Path(tempfile.gettempdir()) / "frida-server.xz"
-        note(f"下载 {url}")
+        note(f"Downloading {url}")
         with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
             f.write(r.read())
         raw = Path(tempfile.gettempdir()) / "frida-server"
@@ -211,17 +212,23 @@ def ensure_frida_server():
     for _ in range(20):
         time.sleep(0.5)
         if "frida-server" in sh("shell", "ps -A | grep frida-server || true"):
-            ok("frida-server 已启动")
+            ok("frida-server started")
             return
-    sys.exit("❌ frida-server 启动失败")
+    sys.exit("❌ Failed to start frida-server")
 
 
 def read_purchase_token(sku_short: str) -> str:
-    """从 Play 商店的 library.db 里读出该 SKU 当前的 purchaseToken（叠加必需）。"""
+    """Read the current purchaseToken for this SKU from Play Store's library.db (required for stacking)."""
     import tempfile, sqlite3, json as _json
     remote = "/data/local/tmp/lib_read.db"
     try:
-        sh("shell", f"cp /data/data/{VENDING}/databases/library.db {remote} 2>/dev/null; chmod 666 {remote}", timeout=30)
+        sh(
+            "shell",
+            f"(cp /data/data/{VENDING}/databases/library.db {remote} 2>/dev/null "
+            f"|| su -c 'cp /data/data/{VENDING}/databases/library.db {remote}') "
+            f"&& (chmod 666 {remote} 2>/dev/null || su -c 'chmod 666 {remote}')",
+            timeout=30,
+        )
     except Exception:
         pass
     tmp = Path(tempfile.gettempdir()) / "lib_read.db"
@@ -230,7 +237,7 @@ def read_purchase_token(sku_short: str) -> str:
             tmp.unlink()
         sh("pull", remote, str(tmp), timeout=60)
     except Exception as e:
-        warn(f"拉取 library.db 失败：{e}")
+        warn(f"Failed to pull library.db: {e}")
         return ""
     if not tmp.exists():
         return ""
@@ -259,15 +266,15 @@ def read_purchase_token(sku_short: str) -> str:
                 alive = int(valid) > now_ms
             except Exception:
                 alive = False
-            # 优先取「未过期」的；多个账号都活跃时取到期时间最晚的
+            # Prefer unexpired tokens; if multiple accounts are active, pick the latest expiry
             if picked is None or (alive and not picked[2]) or (alive == picked[2] and int(valid or 0) > picked[3]):
                 picked = (tk, account, alive, int(valid or 0))
         if picked:
             tok = picked[0]
-            note(f"purchaseToken 来源账号：{picked[1]}（{'有效' if picked[2] else '已过期'}）")
+            note(f"purchaseToken from account: {picked[1]} ({'active' if picked[2] else 'expired'})")
         con.close()
     except Exception as e:
-        warn(f"读取 library.db 失败：{e}")
+        warn(f"Failed to read library.db: {e}")
     finally:
         try:
             tmp.unlink()
@@ -277,44 +284,44 @@ def read_purchase_token(sku_short: str) -> str:
 
 
 def ensure_vending():
-    """BillingClient 需要 Play 商店进程在场，否则 queryProductDetails 永远不回调。"""
+    """BillingClient requires the Play Store process to be running, otherwise queryProductDetails never fires."""
     if sh("shell", f"pidof {VENDING}"):
-        ok("Play 商店进程在跑")
+        ok("Play Store process is running")
         return
-    warn("Play 商店没在跑，正在拉起…")
+    warn("Play Store is not running; launching...")
     sh("shell", f"monkey -p {VENDING} -c android.intent.category.LAUNCHER 1", timeout=30)
     for _ in range(20):
         time.sleep(1)
         if sh("shell", f"pidof {VENDING}"):
-            ok("Play 商店已拉起")
+            ok("Play Store launched")
             time.sleep(2)
             return
-    warn("Play 商店没起来，计费查询可能卡住（试试手动打开 Play 商店或重启模拟器）")
+    warn("Play Store did not start; billing queries may hang (try opening Play Store manually or restarting emulator)")
 
 
 def ensure_module_apk():
     if sh("shell", f"ls {MODULE_REMOTE} 2>/dev/null"):
         sh("shell", f"chmod 444 {MODULE_REMOTE}")
-        ok("计费模块已就位")
+        ok("Billing module is ready")
         return
-    note("正在推送计费模块（一次性）…")
+    note("Pushing billing module (one-time setup)...")
     tmp = Path(tempfile.gettempdir()) / "module_521.apk"
     tmp.write_bytes(base64.b64decode(MODULE_B64))
     sh("push", str(tmp), MODULE_REMOTE, timeout=120)
     sh("shell", f"chmod 444 {MODULE_REMOTE}")
-    ok("计费模块已推送")
+    ok("Billing module pushed")
 
 
 def ensure_network():
     proxy = sh("shell", "settings get global http_proxy")
     if proxy and proxy != "null" and proxy != ":0":
         sh("shell", "settings put global http_proxy :0")
-        warn(f"已清除设备代理（原为 {proxy}），避免网络不通")
-    # 关掉常见的 VPN 类应用，避免 fake-IP 导致 Play 连不上
+        warn(f"Cleared device proxy (was {proxy}) to avoid network issues")
+    # Force-stop common VPN apps whose fake-IP routing can block Play Store
     for p in ("com.github.metacubex.clash.meta", "com.github.kr328.clash"):
         if sh("shell", f"pm list packages | grep -q {p} && echo yes"):
             sh("shell", f"am force-stop {p}")
-            warn(f"已临时关闭 {p}（它会拦截 Play 的网络）")
+            warn(f"Temporarily stopped {p} (intercepts Play Store traffic)")
 
 
 # ---------- UI ----------
@@ -382,15 +389,15 @@ def totp(secret: str, digits=6, period=30) -> str:
     return str(code).zfill(digits)
 
 
-# ---------- 账号 ----------
+# ---------- Accounts ----------
 def accounts_on_device() -> list:
     out = sh("shell", "dumpsys account | grep 'type=com.google'")
     return out.splitlines()
 
 
 def add_account(email, password, totp_secret="") -> bool:
-    """把账号加到手机。没有 2FA 也能走；卡住时交给人处理。"""
-    step(f"把账号加到手机：{email}")
+    """Add Google account to the phone; works without 2FA and pauses for human input if blocked."""
+    step(f"Adding account to device: {email}")
     before = len(accounts_on_device())
     sh("shell", "am start -a android.settings.ADD_ACCOUNT_SETTINGS")
     time.sleep(3)
@@ -399,18 +406,18 @@ def add_account(email, password, totp_secret="") -> bool:
 
     pos = find_edit()
     if pos:
-        for _ in range(3):                      # 输入后回读校验，防吞字
+        for _ in range(3):                      # Read-back verify after typing to guard dropped chars
             tap(*pos); time.sleep(0.8)
-            sh("shell", "input keyevent 123")   # 光标到行尾
+            sh("shell", "input keyevent 123")   # Move cursor to end of line
             for _ in range(60):
-                sh("shell", "input keyevent 67")  # 退格清空
+                sh("shell", "input keyevent 67")  # Backspace to clear field
             type_text(email); time.sleep(1)
             cur = " ".join(n["text"] for n in nodes(ui_xml()) if "@" in n["text"])
             if email.lower() in cur.lower():
                 break
-            warn(f"输入被吞，重试（当前：{cur[:40]}）")
+            warn(f"Input dropped characters; retrying (current: {cur[:40]})")
         else:
-            warn("邮箱多次输入不完整")
+            warn("Email input remained incomplete after retries")
         tap_text("下一步", "Next"); time.sleep(6)
 
     if find_edit():
@@ -418,33 +425,33 @@ def add_account(email, password, totp_secret="") -> bool:
         type_text(password); time.sleep(1)
         tap_text("下一步", "Next"); time.sleep(7)
 
-    # 逐步推进：已知界面自动点，未知/验证界面交给人
+    # Step through screens: tap known prompts, hand off unknown/challenge screens
     unknown_rounds = 0
     for _ in range(90):
         if len(accounts_on_device()) > before:
-            ok("账号已加入设备")
+            ok("Account added to device")
             return True
         xml = ui_xml()
         text = " ".join(n["text"] for n in nodes(xml) if n["text"])
 
         if "此账号已在您的设备上" in text or "already on your device" in text.lower():
-            ok("账号已在设备上")
+            ok("Account is already on device")
             return True
         if "找不到此账号" in text or "Couldn't find your Google Account" in text:
-            warn("Google 说找不到这个账号（检查邮箱拼写）")
+            warn("Google could not find this account (check email spelling)")
             return False
         if "密码不正确" in text or "Wrong password" in text:
-            warn("密码不正确")
+            warn("Incorrect password")
             return False
 
         if ("两步验证" in text or "2-Step" in text or "输入验证码" in text):
             if totp_secret and find_edit():
                 code = totp(totp_secret)
-                note(f"2FA 验证码：{code}")
+                note(f"2FA code: {code}")
                 tap(*find_edit()); type_text(code); time.sleep(1)
                 tap_text("下一步", "Next"); time.sleep(8)
                 continue
-            wait_human("手机上出现两步验证，请在手机上输入验证码完成", 300)
+            wait_human("2-Step Verification prompted on device; enter verification code to finish", 300)
             continue
 
         if tap_text("以后再说", "Not now"):
@@ -455,35 +462,35 @@ def add_account(email, password, totp_secret="") -> bool:
             time.sleep(2); continue
 
         if any(k in text for k in ("证明您不是自动程序", "验证身份", "请输入电话号码", "无法验证", "确认是您本人")):
-            wait_human("手机上出现人机/身份验证，请在手机上手动完成", 300)
+            wait_human("Captcha or identity check shown on device; complete manually", 300)
             continue
 
         unknown_rounds += 1
         if unknown_rounds >= 8:
-            wait_human("当前界面脚本不认识，请手动完成加号，完成后继续", 300)
+            wait_human("Unrecognized screen; finish adding the account manually, then resume", 300)
             unknown_rounds = 0
         time.sleep(2)
 
     if len(accounts_on_device()) > before:
-        ok("账号已加入设备")
+        ok("Account added to device")
         return True
-    warn("加号超时")
+    warn("Timed out adding account")
     return False
 
 
 def add_card(card: dict) -> bool:
-    """在 Google Pay 里添加一张卡（卡号/有效期/CVC/持卡人/邮编）。"""
+    """Add a payment card in Google Pay (number/expiry/CVC/holder/ZIP)."""
     if not card:
         return True
-    step(f"添加付款方式：{card['number'][-4:].rjust(len(card['number']), '*')}")
+    step(f"Adding payment method: {card['number'][-4:].rjust(len(card['number']), '*')}")
     sh("shell", "am start -a android.intent.action.VIEW "
                 "-d 'https://pay.google.com/gp/w/u/0/home/paymentmethods'")
     time.sleep(10)
     if not tap_text("Add a payment method", "添加付款方式", "添加信用卡", "Add card"):
-        warn("没找到添加入口，跳过绑卡（可手动添加）")
+        warn("Add-payment button not found; skipping card binding (can add manually)")
         return False
     time.sleep(9)
-    # 依次填：卡号 → 月 → 年 → CVC → 姓名 → 地址 → 城市
+    # Fill sequentially: card number -> MM -> YY -> CVC -> cardholder -> address -> city
     edits = [n for n in nodes(ui_xml()) if "EditText" in n["cls"]]
     mm = re.sub(r"\D", "", card["exp"])[:2] or "01"
     yy = re.sub(r"\D", "", card["exp"])[2:][-2:] or "30"
@@ -496,15 +503,15 @@ def add_card(card: dict) -> bool:
         tap(edits[i]["x"], edits[i]["y"]); time.sleep(0.6)
         type_text(val); time.sleep(0.5)
     if not tap_text("Save", "保存"):
-        wait_human("请手动点「保存」完成绑卡，然后继续", 240)
+        wait_human("Tap Save on device to finish adding card, then continue", 240)
     else:
         time.sleep(8)
-    ok("绑卡流程已提交")
+    ok("Card binding submitted")
     return True
 
 
 def current_play_account() -> str:
-    """读 Play 当前账号；读不到返回空串。"""
+    """Read current Play Store account email; return empty string if unreadable."""
     for n in nodes(ui_xml()):
         if "账号和设置" in n["desc"] or "Account and settings" in n["desc"]:
             tap(n["x"], n["y"]); time.sleep(3); break
@@ -518,8 +525,8 @@ def current_play_account() -> str:
 
 
 def switch_play(email) -> bool:
-    """切 Play 账号，UI 上确认不了就返回 False（绝不猜）。"""
-    step(f"切换到 Play 账号：{email}")
+    """Switch Play Store account; return False if UI verification fails (never guess)."""
+    step(f"Switching Play Store account: {email}")
     want = email.lower()
     sh("shell", f"am force-stop {VENDING}")
     sh("shell", f"am force-stop {PKG}")
@@ -527,7 +534,7 @@ def switch_play(email) -> bool:
                 f"--es authAccount {email}")
     time.sleep(9)
     if current_play_account() == want:
-        ok("Play 账号已确认"); return True
+        ok("Play Store account verified"); return True
     for n in nodes(ui_xml()):
         if "账号和设置" in n["desc"] or "Account and settings" in n["desc"]:
             tap(n["x"], n["y"]); time.sleep(3); break
@@ -540,8 +547,8 @@ def switch_play(email) -> bool:
     sh("shell", "input keyevent 4")
     got = current_play_account()
     if got == want:
-        ok("Play 账号已确认"); return True
-    warn(f"Play 账号没切过来（当前：{got or '未知'}）——中止，避免跑错号")
+        ok("Play Store account verified"); return True
+    warn(f"Failed to switch Play Store account (current: {got or 'unknown'}) -- aborting to avoid wrong account")
     return False
 
 
@@ -558,7 +565,7 @@ def launch_app() -> int:
 
 
 def build_js(plan: str = "auto", list_only: bool = False, stack: bool = False, old_token: str = "", stack_mode=None) -> str:
-    """按 plan 选择要查询的商品：5x=20TB，20x=30TB（隐藏带试用 ID）。"""
+    """Select products to query by plan: 5x=20TB, 20x=30TB (hidden trial-eligible IDs)."""
     js = FRIDA_JS
     if list_only:
         js = js.replace('var PREFER = "";', 'var PREFER = ""; var LIST_ONLY=true;', 1)
@@ -575,7 +582,7 @@ def build_js(plan: str = "auto", list_only: bool = False, stack: bool = False, o
         js = js.replace('var PRODUCTS = ["g1.play.20tb", "g1.play.ai.pro", "g1.30tb"];',
                         'var PRODUCTS=["g1.play.20tb"];')
     elif plan.startswith("pro"):
-        # Google AI Pro 5TB（g1.2tb.ai.subs_variant）：12months-eft / 6months-eft / 6months-eft-2 / 6months-eft-ss-2026
+        # Google AI Pro 5TB (g1.2tb.ai.subs_variant): 12months-eft / 6months-eft / 6months-eft-2 / 6months-eft-ss-2026
         prefer = {"pro12": "12months-eft", "pro6": "6months-eft",
                   "pro6b": "6months-eft-2", "pro6c": "6months-eft-ss-2026"}.get(plan, "12months-eft")
         js = js.replace('var PRODUCTS = ["g1.play.20tb", "g1.play.ai.pro", "g1.30tb"];',
@@ -586,7 +593,7 @@ def build_js(plan: str = "auto", list_only: bool = False, stack: bool = False, o
 
 def run_trial(pid: int, wait=90, plan="auto", list_only=False, stack=False, old_token="", stack_mode=None) -> dict:
     import frida
-    step("注入计费模块，查询免费试用")
+    step("Injecting billing module to query free trial offers")
     dev = frida.get_usb_device(timeout=10)
     sess = dev.attach(pid)
     res = {"offers": [], "launched": None, "purchase": None, "errors": []}
@@ -598,11 +605,11 @@ def run_trial(pid: int, wait=90, plan="auto", list_only=False, stack=False, old_
         ev = p.get("ev")
         if ev == "offer":
             res["offers"].append(p)
-            note(f"offer {p.get('id')} → {p.get('micros')} ({p.get('p0','')})")
+            note(f"offer {p.get('id')} -> {p.get('micros')} ({p.get('p0','')})")
             note(f"    token={p.get('token','')}")
         elif ev == "launched":
             res["launched"] = p
-            ok(f"已拉起收银台：{p}")
+            ok(f"Checkout sheet launched: {p}")
         elif ev == "purchase_cb":
             res["purchase"] = p
         elif ev and ("err" in ev or ev.startswith("no_")):
@@ -616,7 +623,7 @@ def run_trial(pid: int, wait=90, plan="auto", list_only=False, stack=False, old_
 
 
 def handle_verify(password="") -> bool:
-    """買完可能要求重新输密码；顺手关掉 Play 积分提示（ja/en/zh）。"""
+    """Post-purchase password re-auth and dismissing Play Points prompts (ja/en/zh)."""
     changed = False
     notnow = ("以后再说", "Not now", "後で", "あとで", "キャンセル")
     verify = ("验证", "Verify", "認証", "確認")
@@ -635,7 +642,7 @@ def handle_verify(password="") -> bool:
 
 
 def tap_button(*needles) -> bool:
-    """needles を含む要素をタップ。Button クラスを優先する。"""
+    """Tap a UI element containing any needle, prioritizing Button widgets."""
     cand = []
     for n in nodes(ui_xml()):
         label = n["text"] or n["desc"]
@@ -647,19 +654,19 @@ def tap_button(*needles) -> bool:
         return False
     cand.sort(key=lambda c: -c[0])
     _, x, y, label = cand[0]
-    note(f"タップ: {label!r} @ ({x},{y})")
+    note(f"Tap: {label!r} @ ({x},{y})")
     tap(x, y)
     return True
 
 
 def confirm_zero(wait=40, password="") -> dict:
-    step("检查收银台金额（只在 0 元时确认）")
+    step("Checking checkout price (only confirm when $0)")
     out = {"price": None, "confirmed": False, "ineligible": False, "text": ""}
     for _ in range(wait // 2):
         xml = ui_xml()
         text = " ".join(n["text"] for n in nodes(xml) if n["text"])
         if any(k in text for k in INELIGIBLE_NEEDLES):
-            warn("Play：このアカウントは無料トライアル対象外です")
+            warn("Play: this account is not eligible for the free trial")
             if tap_text("知道了", "OK", "Got it", "OK"):
                 time.sleep(2)
             out["text"] = text[:400]
@@ -678,41 +685,41 @@ def confirm_zero(wait=40, password="") -> dict:
                     zero = False
                 if zero:
                     tap_button(*SUB_NEEDLES); out["confirmed"] = True
-                    ok(f"0円を確認して登録: {m.group(0)}")
+                    ok(f"Verified $0 and subscribed: {m.group(0)}")
                     return out
-                warn(f"表示金額 {m.group(0)} は 0 ではない。押さない")
+                warn(f"Displayed price {m.group(0)} is non-zero; not tapping")
                 return out
             if any(k in text for k in FREE_WORDS) or TRIAL_PAT.search(text):
                 tap_button(*SUB_NEEDLES); out["confirmed"] = True
-                ok("無料トライアル表記を確認して登録")
+                ok("Verified free-trial label and subscribed")
                 return out
-            warn("金額も無料表記も見つからない。念のため押さない")
+            warn("Neither price nor free-trial wording found; skipping tap for safety")
             return out
         time.sleep(2)
-    warn("チェックアウト画面を検出できませんでした（既に登録済みの可能性）")
+    warn("Checkout sheet not detected (account may already be subscribed)")
     try:
         tail = " | ".join(n["text"] for n in nodes(ui_xml()) if n["text"])
-        note("画面テキスト: " + tail[:400])
+        note("Screen text: " + tail[:400])
     except Exception:
         pass
     return out
 
 
 def verify() -> str:
-    step("核对订阅状态")
+    step("Verifying subscription status")
     sh("shell", f"am start -a android.intent.action.VIEW "
                 f"-d 'https://play.google.com/store/account/subscriptions'")
     time.sleep(9)
     text = " | ".join(n["text"] for n in nodes(ui_xml()) if n["text"])
     if "Ultra" in text:
-        ok("订阅页已显示 Ultra")
+        ok("Subscriptions page shows Ultra")
     return text[:500]
 
 
-# ---------- 单号流程 ----------
+# ---------- Single-account workflow ----------
 def process(email, password="", totp_secret="", add=True, card=None, plan="auto", no_switch=False, list_only=False, stack=False, old_token="", stack_mode=None) -> dict:
     print("\n" + "=" * 56)
-    print(f"  处理账号：{email}")
+    print(f"  Processing account: {email}")
     print("=" * 56)
     rec = {"email": email, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "status": "unknown"}
     if add:
@@ -721,36 +728,36 @@ def process(email, password="", totp_secret="", add=True, card=None, plan="auto"
                 rec["status"] = "add_account_failed"
                 return rec
         except Exception as e:
-            warn(f"加号失败：{e}")
+            warn(f"Failed adding account: {e}")
             rec["status"] = "add_account_error"
             return rec
     if card:
         try:
             add_card(card)
         except Exception as e:
-            warn(f"绑卡失败：{e}")
+            warn(f"Failed adding card: {e}")
     if globals().get("SKIP_ACCOUNT_CHECK"):
-        ok("已跳过 Play 账号校验（--force）")
+        ok("Skipped Play account check (--force)")
     elif list_only:
         cur = current_play_account()
-        ok(f"列表模式：使用设备当前账号 {cur or '未知'}（不校验、不下单）")
+        ok(f"List mode: using device account {cur or 'unknown'} (no verification, no purchase)")
     elif no_switch:
         cur = current_play_account()
         if cur != email.lower():
-            warn(f"当前 Play 账号是 {cur or '未知'}，不是 {email}，中止")
+            warn(f"Active Play account is {cur or 'unknown'}, not {email}; aborting")
             rec["status"] = "wrong_account"
             return rec
-        ok("Play 账号已确认（手动切换模式）")
+        ok("Play account verified (manual-switch mode)")
     elif not switch_play(email):
         rec["status"] = "play_account_switch_failed"
         return rec
     if stack and not old_token:
-        note("正在读取当前订阅的 purchaseToken…")
+        note("Reading current subscription purchaseToken...")
         old_token = read_purchase_token("subs_variant")
         if old_token:
-            ok(f"已读到 purchaseToken（{old_token[:16]}…），将用订阅升级模式叠加")
+            ok(f"Loaded purchaseToken ({old_token[:16]}...); will stack via subscription upgrade")
         else:
-            warn("没读到 purchaseToken，将退回 queryPurchases 方式（可能拿不到）")
+            warn("Could not read purchaseToken; falling back to queryPurchases (may not return active token)")
 
     pid = launch_app()
     if not pid:
@@ -770,11 +777,11 @@ def process(email, password="", totp_secret="", add=True, card=None, plan="auto"
     return rec
 
 
-# ---------- 入口 ----------
+# ---------- Entrypoint ----------
 def do_check():
     global ADB
     ADB = find_adb()
-    ok(f"adb：{ADB}")
+    ok(f"adb: {ADB}")
     pick_device()
     ensure_root()
     ensure_network()
@@ -783,15 +790,15 @@ def do_check():
     ensure_vending()
     try:
         import frida
-        ok(f"frida：{frida.__version__}")
+        ok(f"frida: {frida.__version__}")
     except Exception:
-        warn("电脑没装 frida，请执行：pip3 install frida")
-    ok("环境自检通过，可以开始跑号了")
+        warn("frida is not installed on host; run: pip3 install frida")
+    ok("Environment self-check passed; ready to run")
     return 0
 
 
 def parse_accounts(path: Path):
-    """每行：邮箱----密码----辅助邮箱----2FA----卡号----有效期----CVC----持卡人----邮编"""
+    """Per line: email----password----recovery----2fa----card----exp----cvc----holder----zip"""
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -805,7 +812,7 @@ def parse_accounts(path: Path):
 
 
 def parse_card(parts) -> dict | None:
-    """从账号行里取卡信息（第 5~9 项）。"""
+    """Extract card fields (columns 5-9) from an account line."""
     if len(parts) < 5 or not parts[4]:
         return None
     return {
@@ -819,24 +826,24 @@ def parse_card(parts) -> dict | None:
 
 def main():
     global ADB, SERIAL
-    ap = argparse.ArgumentParser(description="Google AI Ultra 0 元开通一键脚本")
-    ap.add_argument("accounts", nargs="?", help="账号文件（每行 email----password----recovery----totp）")
-    ap.add_argument("--account", help="单号：email:password:totp")
-    ap.add_argument("--check", action="store_true", help="只做环境自检")
-    ap.add_argument("--list", action="store_true", help="只列出 offer 和 token，不拉起收银台（零风险）")
-    ap.add_argument("--force", action="store_true", help="跳过 Play 账号校验（读不到账号时用）")
+    ap = argparse.ArgumentParser(description="Google AI Ultra $0 trial activation script")
+    ap.add_argument("accounts", nargs="?", help="Accounts file (email----password----recovery----totp per line)")
+    ap.add_argument("--account", help="Single account: email:password:totp")
+    ap.add_argument("--check", action="store_true", help="Run environment self-check only")
+    ap.add_argument("--list", action="store_true", help="List offers and tokens only without launching checkout (zero risk)")
+    ap.add_argument("--force", action="store_true", help="Skip Play account check (use when account cannot be read)")
     ap.add_argument("--mode", type=int, default=None,
-                    help="替换模式：1=TIME_PRORATION 2=CHARGE_PRORATED_PRICE 3=WITHOUT_PRORATION 4=DEFERRED 5=CHARGE_FULL_PRICE")
+                    help="Replacement mode: 1=TIME_PRORATION 2=CHARGE_PRORATED_PRICE 3=WITHOUT_PRORATION 4=DEFERRED 5=CHARGE_FULL_PRICE")
     ap.add_argument("--old-token", default="",
-                    help="当前订阅的 purchaseToken（配合 --stack，直接用它做升级，跳过 queryPurchases）")
+                    help="Current subscription purchaseToken (use with --stack to upgrade directly, skipping queryPurchases)")
     ap.add_argument("--stack", action="store_true",
-                    help="订阅升级叠加：用旧 purchaseToken + CHARGE_FULL_PRICE 拉起结算，剩余试用期会折算顺延")
+                    help="Subscription upgrade stacking: launch checkout with old purchaseToken + CHARGE_FULL_PRICE so remaining trial prorates/extends")
     ap.add_argument("--serial", default=None)
-    ap.add_argument("--no-add", action="store_true", help="跳过自动加号（账号已在手机上）")
+    ap.add_argument("--no-add", action="store_true", help="Skip adding account (account is already signed in on device)")
     ap.add_argument("--no-switch", action="store_true",
-                    help="不自动切号，只校验当前 Play 账号是否为目标号")
+                    help="Do not switch accounts automatically; only verify active Play account matches target")
     ap.add_argument("--plan", default="auto", choices=["auto", "5x", "20x", "pro12", "pro6", "pro6b", "pro6c"],
-                    help="auto=两档都查挑最长；5x=Ultra 20TB；20x=Ultra 30TB")
+                    help="auto=query both tiers and pick longest; 5x=Ultra 20TB; 20x=Ultra 30TB")
     a = ap.parse_args()
 
     ADB = find_adb()
@@ -851,7 +858,7 @@ def main():
     ensure_network()
     ensure_frida_server()
     ensure_module_apk()
-    ensure_vending()   # Play 商店必须在跑，否则计费查询永远不回调
+    ensure_vending()   # Play Store must be running, otherwise billing queries never fire callbacks
 
     REPORT_DIR.mkdir(exist_ok=True)
     rows = []
@@ -866,12 +873,12 @@ def main():
         ap.print_help()
         return 1
 
-    print(f"\n共 {len(rows)} 个账号，开始执行\n")
+    print(f"\nLoaded {len(rows)} account(s); starting execution\n")
     results = []
     for i, row in enumerate(rows, 1):
         email, pw, _rec, sec = row[0], row[1], row[2], row[3]
         card = parse_card(row)
-        print(f"\n──── 进度 {i}/{len(rows)} ────")
+        print(f"\n──── Progress {i}/{len(rows)} ────")
         try:
             rec = process(email, pw, sec, add=(not a.no_add and not a.list), card=card, plan=a.plan,
                           no_switch=a.no_switch, list_only=a.list, stack=a.stack, old_token=a.old_token,
@@ -881,21 +888,21 @@ def main():
         results.append(rec)
         (REPORT_DIR / f"{email.split('@')[0]}.json").write_text(
             json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"   结果：{rec.get('status')}")
+        print(f"   Result: {rec.get('status')}")
 
     print("\n" + "=" * 56)
-    print("  汇总")
+    print("  Summary")
     print("=" * 56)
     for r in results:
         print(f"  {r['email']:<42} {r.get('status')}")
-    print(f"\n明细已保存到 {REPORT_DIR.resolve()}")
+    print(f"\nDetails saved to {REPORT_DIR.resolve()}")
     return 0
 
 
 entry = main
 
 
-# ---------- 内嵌资源（勿改） ----------
+# ---------- Embedded resources (do not modify) ----------
 FRIDA_JS = (Path(__file__).resolve().parent.parent / "agent" / "agent.iife.js").read_text(encoding="utf-8")
 
 MODULE_B64 = (

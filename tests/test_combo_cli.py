@@ -1,6 +1,6 @@
-"""combo.py CLI のテスト。
+"""Tests for combo.py CLI.
 
-state_reader / offer_reader / executor を注入し、デバイスも frida も使わない。
+Injects state_reader / offer_reader / executor without touching devices or frida.
 """
 
 import io
@@ -38,7 +38,7 @@ OFFERS = [
 
 
 class FakeDevice:
-    """library.db の所有行をメモリ上で模した読み取り専用の状態リーダー。"""
+    """In-memory read-only state reader modeling ownership rows in library.db."""
 
     def __init__(self, rows, now_ms=NOW):
         self.rows = list(rows)
@@ -53,7 +53,7 @@ class FakeDevice:
         return [dict(offer) for offer in OFFERS]
 
     def bump_month(self, months):
-        """購入が成立したものとして期限を months ヶ月ぶん伸ばす（概算で単調増加のみ担保）。"""
+        """Advance expiration by `months` months assuming a completed step."""
         current = combo_core.latest_end_ms(self.read_state()) or self.now_ms
         self.rows = [
             (DOC_PREFIX + "g1.2tb.ai.subs_variant", "user@example.com",
@@ -99,7 +99,7 @@ class NoDeviceTests(unittest.TestCase):
         code, out, _ = _run(["run"], device, executor)
 
         self.assertNotEqual(code, 0)
-        self.assertIn("実行するには --execute --yes が必要です", out)
+        self.assertIn("To execute, pass both --execute --yes", out)
         executor.assert_not_called()
 
     def test_run_needs_both_flags(self):
@@ -122,9 +122,9 @@ class PlanTests(unittest.TestCase):
         code, out, _ = _run(["plan"], device)
 
         self.assertEqual(code, 0)
-        self.assertIn("有効なサブスクがあるため積み上げ可能", out)
+        self.assertIn("Active subscription found; stacking is eligible", out)
         self.assertIn("2028-11-21", out)
-        self.assertIn("[積み上げ] g1.2tb.ai.subs_variant / 12months-eft", out)
+        self.assertIn("[Stack] g1.2tb.ai.subs_variant / 12months-eft", out)
         self.assertIn("micros=0", out)
         self.assertEqual(device.calls, 1)
         self.assertNotIn("frida", sys.modules)
@@ -137,14 +137,14 @@ class PlanTests(unittest.TestCase):
         code, out, _ = _run(["plan", "--no-auto-renew"], device)
 
         self.assertEqual(code, 0)
-        self.assertIn("自動更新がオフ", out)
+        self.assertIn("Auto-renew is off", out)
 
     def test_plan_for_fresh_account_starts_with_longest_offer(self):
         code, out, _ = _run(["plan"], FakeDevice([]))
 
         self.assertEqual(code, 0)
-        self.assertIn("新規登録", out)
-        self.assertIn("1. [新規] g1.2tb.ai.18months_eft / eft-18months / +18ヶ月", out)
+        self.assertIn("new subscription", out)
+        self.assertIn("1. [New] g1.2tb.ai.18months_eft / eft-18months / +18 months", out)
 
     def test_plan_warns_when_account_differs(self):
         device = FakeDevice(
@@ -155,7 +155,7 @@ class PlanTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("other@example.com", err)
-        self.assertIn("一致しません", err)
+        self.assertIn("does not match", err)
 
     def test_plan_silent_when_account_matches(self):
         device = FakeDevice(
@@ -165,7 +165,7 @@ class PlanTests(unittest.TestCase):
         code, _, err = _run(["plan", "--account", "user@example.com"], device)
 
         self.assertEqual(code, 0)
-        self.assertNotIn("一致しません", err)
+        self.assertNotIn("does not match", err)
 
 
 class RunTests(unittest.TestCase):
@@ -189,16 +189,12 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(actions), 3)
         self.assertEqual(actions[0].kind, "new_subscription")
         self.assertTrue(all(action.kind == "stack" for action in actions[1:]))
-        self.assertIn("支払いを完了してください", out)
+        self.assertIn("complete payment manually", out)
         self.assertIn("2028", out)
         fake_input.assert_not_called()
 
     def test_run_stops_after_the_first_step_when_the_end_date_does_not_grow(self):
-        """厳格モード（--stop-on-failure）では期限が伸びない時点で中断する。
-
-        既定は「使用済みオファーを飛ばして続行」なので、ここでは明示的に
-        厳格モードを指定して中断の挙動を固定する。
-        """
+        """Strict mode (--stop-on-failure) aborts as soon as a step fails to extend."""
         device = FakeDevice([])
         actions = []
 
@@ -216,12 +212,12 @@ class RunTests(unittest.TestCase):
         )
 
         self.assertNotEqual(code, 0)
-        self.assertEqual(len(actions), 1, "期限が伸びないときは次のステップへ進んではいけない")
-        self.assertIn("有効期限", out)
-        self.assertIn("中断", out)
+        self.assertEqual(len(actions), 1, "Must stop instead of advancing when expiration did not extend")
+        self.assertIn("Expiration did not extend", out)
+        self.assertIn("Stopping", out)
 
     def test_run_stops_when_the_billing_view_cannot_be_opened(self):
-        """厳格モードでは課金画面が開けない時点で中断する。"""
+        """Strict mode aborts as soon as Play checkout fails to open."""
         device = FakeDevice([])
         actions = []
 
@@ -240,7 +236,7 @@ class RunTests(unittest.TestCase):
 
         self.assertNotEqual(code, 0)
         self.assertEqual(len(actions), 1)
-        self.assertIn("課金画面", out)
+        self.assertIn("Could not open Play checkout screen", out)
 
     def test_run_waits_for_enter_in_interactive_mode(self):
         device = FakeDevice([])
@@ -283,14 +279,14 @@ class RunTests(unittest.TestCase):
         code, out, _ = _run(["run", "--execute", "--yes", "--non-interactive"], device, executor)
 
         self.assertNotEqual(code, 0)
-        self.assertIn("積み上げ可能な無料オファーが見つかりません", out)
+        self.assertIn("No stackable free offers found", out)
         executor.assert_not_called()
 
     def test_run_reports_executor_exceptions_without_traceback(self):
         device = FakeDevice([])
 
         def executor(action):
-            raise RuntimeError("接続できませんでした")
+            raise RuntimeError("Connection failed")
 
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
@@ -302,7 +298,7 @@ class RunTests(unittest.TestCase):
             )
 
         self.assertNotEqual(code, 0)
-        self.assertIn("接続できませんでした", err.getvalue())
+        self.assertIn("Connection failed", err.getvalue())
         self.assertNotIn("Traceback", out.getvalue() + err.getvalue())
 
 

@@ -1,187 +1,178 @@
-# セットアップ
+# Setup
 
-## 1. ホスト（PC）側
+## 1. Host (PC) Side
 
-| 必要なもの | 用途 | 確認 |
+| Requirement | Purpose | Verification |
 |---|---|---|
-| Python 3.9+ | スクリプト実行 | `python3 -V` |
-| adb (platform-tools) | 端末操作 | `adb version` |
-| node / npm（任意） | Frida エージェントのビルド | `node -v` |
-| uv（任意） | venv 作成の高速化 | `uv --version` |
+| Python 3.9+ | Run scripts | `python3 -V` |
+| adb (platform-tools) | Device communication | `adb version` |
+| node / npm (optional) | Build Frida agent | `node -v` |
+| uv (optional) | Faster venv creation | `uv --version` |
 
-adb が無い場合は `./scripts/setup.sh` が `tools/platform-tools/` に自動取得します
-（Linux 版。macOS は https://developer.android.com/tools/releases/platform-tools から取得）。
+If `adb` is missing, `./scripts/setup.sh` downloads `tools/platform-tools/` automatically (Linux build; on macOS, download from <https://developer.android.com/tools/releases/platform-tools>).
 
-## 2. 端末側
+## 2. Device Side
 
-### 2-1. 必須
+### 2-1. Prerequisites
 
 ```bash
-adb devices                     # 端末が見える
-adb shell id                    # uid=0(root) であること
+adb devices                            # Device appears
+adb shell id                           # Must report uid=0(root)
 adb shell getprop ro.product.cpu.abi   # arm64-v8a / x86_64
 adb shell getprop ro.build.version.release
 ```
 
-root は **KernelSU / Magisk / APatch** のいずれでも可。
-`adb shell id` が `shell` の場合は以下を試す:
+Any root solution (**KernelSU / Magisk / APatch**) works.
+If `adb shell id` returns `shell`, try:
 
 ```bash
-adb root                        # エミュレータ系
-adb shell su -c id              # 実機（KernelSU は adb shell が最初から root のことが多い）
+adb root                        # Emulators
+adb shell su -c id              # Physical devices (KernelSU often grants adb shell root by default)
 ```
 
-### 2-2. Google Play 側
+### 2-2. Google Play State
 
-- Play ストアに **対象アカウントでログイン済み**
-- **支払い方法（カード等）が登録済み**
-- Google One（`com.google.android.apps.subscriptions.red`）がインストール済み
-- サブスクの状態:
-  - 新規で 12 ヶ月 trial を取るなら「サブスクなし」でも可
-  - **重ね掛け（step2〜）をするにはサブスクが有効（自動更新オン）であること**
-  - 解約済みだと新しい購入が「期限後転換」になり trial が付かないことがある
+- Signed into Google Play with the **target account**
+- **Payment method** (credit card, etc.) registered on the account
+- Google One (`com.google.android.apps.subscriptions.red`) installed
+- Subscription status:
+  - A fresh 12-month trial works even with no active subscription
+  - **Stacking (`step2` and onward) requires an active subscription (auto-renew ON)**
+  - If already canceled, a new purchase may convert at period end instead of granting a trial
 
 ### 2-3. frida-server
 
-経路 B（frida 17）ではクライアント 17.22.2 と **同じメジャー** の frida-server が必要です。
+Path B (frida 17) requires a `frida-server` matching the **same major version** as the `17.22.2` client.
 
-- 端末に `/data/local/tmp/frida-server` が無ければ、`ultra0-17.py` が
-  17.22.2 を自動ダウンロードして起動します
-- KernelSU/Magisk の `magisk-frida` モジュール等が起動時に別バージョンを起動している場合は、
-  **そのモジュールの `bin/frida-server` を 17.x に差し替える**か、モジュールを無効化してください
-- 不一致が出たら:
+- If `/data/local/tmp/frida-server` is absent on the device, `ultra0-17.py` downloads and starts `17.22.2` automatically.
+- If a KernelSU/Magisk module (such as `magisk-frida`) launches a different version on boot, either **replace its `bin/frida-server` with 17.x** or disable the module.
+- If a mismatch occurs:
 
 ```bash
 ./scripts/run.sh fix-frida
 ```
 
-## 3. 接続（USB / Wi-Fi）
+## 3. Connection (USB / Wi-Fi)
 
-USB が安定しない環境では Wi-Fi ADB を併用できます。
+Where USB connections are unstable, Wi-Fi ADB can be used alongside or instead of USB:
 
 ```bash
 adb tcpip 5555
-adb connect <端末のIP>:5555     # 端末: 設定 > ネットワーク > IP
-adb devices                     # 2 行出ても OK（先頭が使われる）
+adb connect <device-ip>:5555     # Device: Settings > Network > IP address
+adb devices                      # Two entries are fine (first one is used)
 ```
 
-`ultra0-17.py` は adb の先頭デバイスを使います。特定端末を指定したい場合:
+`ultra0-17.py` uses the first device listed by `adb`. To target a specific device:
 
 ```bash
 python scripts/ultra0-17.py --check --serial <serial>
 ```
 
-## 4. 経路 A: Android 12/13 エミュレータ（MuMu など / frida 16.5.9）
+## 4. Path A: Android 12/13 Emulator (MuMu, etc. / frida 16.5.9)
 
-Windows 前提。元 zip の手順そのままです。
+Windows-focused, following the original zip package workflow:
 
 ```bat
 pip install frida==16.5.9
 python scripts\setup_env_frida16.py
-windows\frida16\0_環境自検.bat
-windows\frida16\1_offer一覧.bat
+windows\frida16\0_check_env.bat
+windows\frida16\1_list_offers.bat
 ```
 
-エミュレータ側で「ROOT 権限」を ON、ADB デバッグを有効にしてください。
-MuMu の ADB ポートは 16384 / 7555 など。`setup_env_frida16.py` が自動で `adb connect` します。
+Enable "ROOT permission" and ADB debugging in the emulator settings.
+MuMu uses ADB ports such as `16384` or `7555`; `setup_env_frida16.py` runs `adb connect` automatically.
 
-## 5. 経路 B: Android 14+ 実機（このリポジトリの追加分）
+## 5. Path B: Rooted Android 14+ Physical Device (Added in This Repo)
 
 ```bash
 ./scripts/setup.sh
 ```
 
-やっていること:
+What this does:
 
-1. `.venv` を作り `frida==17.22.2` をインストール
-2. 同梱の `agent/agent.iife.js` を使う（実績のあるバンドル）
-3. adb が無ければ `tools/` に platform-tools を取得
-4. 端末の接続・root を確認
+1. Creates `.venv` and installs `frida==17.22.2`
+2. Uses the prebuilt `agent/agent.iife.js` (verified working bundle)
+3. Downloads `platform-tools` into `tools/` if `adb` is not installed
+4. Verifies device connection and root access
 
-`agent/injected.js` を編集した場合だけ再ビルドします:
-
-```bash
-./scripts/setup.sh --rebuild   # npm install → patch → build
-```
-
-（バンドルは Frida のコンパイラ設定に依存するため、`agent/package.json` の
-`"type": "commonjs"` を変えないでください。`esm` 形式だと `malformed package` になります）
+Only rebuild if you modify `agent/injected.js`:
 
 ```bash
-./scripts/run.sh check    # 環境自検
-./scripts/run.sh list     # offer 一覧（課金しない）
+./scripts/setup.sh --rebuild   # npm install -> patch -> build
 ```
 
-`check` の最後に `✅ 环境自检通过` が出れば OK。
+(Do not change `"type": "commonjs"` in `agent/package.json` -- Frida's compiler relies on it; `esm` output fails with `malformed package`.)
 
-SKU / offer を読むだけなら SKU スキャナも使えます（登録・課金は行いません）。
+```bash
+./scripts/run.sh check    # Environment self-check
+./scripts/run.sh list     # List offers (no charges)
+```
+
+Setup is good once `check` finishes with a green `✅` pass line.
+
+To inspect SKUs and offers without purchasing, use the SKU scanner (read-only):
 
 ```bash
 ./scripts/run.sh scan generate --tiers 2tb.ai --periods 18months,12months --suffixes _eft --format table
 ./scripts/run.sh scan query --candidates --batch-size 20 --timeout 8
-./scripts/run.sh scan summarize --input ultra0-report/sku-scan-<タイムスタンプ>.json
-./scripts/run.sh test     # 単体テスト
+./scripts/run.sh scan summarize --input ultra0-report/sku-scan-<timestamp>.json
+./scripts/run.sh test     # Unit tests
 ```
 
-アカウント状態（新規 / 有効 / 期限切れ）に応じて買う順番を決めたい場合は
-コンボプランナーを使います。既定はドライランで、端末を読むには `--device` が要ります。
+To plan purchase order based on account state (`fresh` / `active` / `expired`), use the combo planner. It defaults to dry-run and requires `--device` to query the device:
 
 ```bash
-./scripts/run.sh combo plan --device                  # 判定とプランだけ表示（実行しない）
-./scripts/run.sh combo run --device --execute --yes   # 1 ステップずつ実行（支払いは人が行う）
+./scripts/run.sh combo plan --device                  # Show state check and plan only
+./scripts/run.sh combo run --device --execute --yes   # Run step-by-step (user completes payment)
 ```
 
-`run` は課金画面を開いて Enter を待つだけで、「登録」の自動タップはしません。
-注意点は [COMBO.md](COMBO.md) を参照してください。
+`run` opens the billing sheet and waits for Enter -- it never auto-taps "Subscribe".
+See [COMBO.md](COMBO.md) for caveats.
 
-詳細は [SKU-SCANNER.md](SKU-SCANNER.md) を参照してください。`micros=0` は初回価格を
-示すだけであり、適格性や更新価格を証明するものではありません。
+See [SKU-SCANNER.md](SKU-SCANNER.md) for full details. Remember that `micros=0` only indicates the initial charge and does not prove eligibility or renewal price.
 
-## 6. 実行順序
+## 6. Execution Order
 
 ```bash
-./scripts/run.sh step1    # 12ヶ月無料（offer: 12months-eft）
-./scripts/run.sh step2    # +6ヶ月（6months-eft、subscription upgrade）
-./scripts/run.sh step3    # +6ヶ月（6months-eft-2）
-./scripts/run.sh step4    # 予備 +6ヶ月（6months-eft-ss-2026、エラーになる場合あり）
+./scripts/run.sh step1    # 12 months free (offer: 12months-eft)
+./scripts/run.sh step2    # +6 months (6months-eft, subscription upgrade)
+./scripts/run.sh step3    # +6 months (6months-eft-2)
+./scripts/run.sh step4    # Backup +6 months (6months-eft-ss-2026; may return an error)
 ```
 
-各ステップ後、Play の「定期購入」画面（`https://play.google.com/store/account/subscriptions`）で
-**次回のお支払い日** が後ろにずれていることを確認してから次へ進んでください。
+After each step, verify in Google Play's Subscriptions screen (`https://play.google.com/store/account/subscriptions`) that **Next payment** has shifted forward before proceeding to the next step.
 
-| ステップ後 | 期待される期限 |
+| After Step | Expected Expiration |
 |---|---|
-| step1 | 12ヶ月後 |
-| step2 | 18ヶ月後 |
-| step3 | 24ヶ月後 |
-| step4 | 30ヶ月後（取れれば） |
+| step1 | +12 months |
+| step2 | +18 months |
+| step3 | +24 months |
+| step4 | +30 months (if accepted) |
 
-## 7. コンボを実行する前に
+## 7. Before Running Combo
 
-`combo` で積み上げる場合も、前提は「サブスクが有効（自動更新オン）」です。
-先に解約しないでください。解約済みだと新しい購入が期限後の転換になり、
-トライアルが付かないことがあります。
-
-```bash
-./scripts/run.sh combo plan --device    # まず状態と判定を確認する
-```
-
-`plan` の判定が「積み上げ可能」でも、`18months_eft` は `subs_variant` とは別 SKU です。
-有効なサブスクがある状態で買うと置き換えになる恐れがあるため、
-`active` のときは新規登録のステップを作りません（[COMBO.md](COMBO.md) の「リスク」を参照）。
-
-## 8. 終了処理
+Stacking via `combo` also requires an **active subscription (auto-renew ON)**.
+Do not cancel early -- canceling beforehand can cause subsequent purchases to convert at period end without applying a trial.
 
 ```bash
-# トライアル期限後に課金されないよう、期限内に解約する
-# Play ストア > お支払いと定期購入 > 定期購入 > Google AI Pro > 定期購入を解約
+./scripts/run.sh combo plan --device    # Inspect state and judgment first
 ```
 
-解約しても期限までは利用できます。
-Frida が不要なら、端末の常駐を止めておくと安定します:
+Even when `plan` reports that stacking is possible, note that `18months_eft` is a different SKU from `subs_variant`.
+Purchasing it while an active subscription exists may replace the subscription instead of stacking, so `combo` never generates a `new_subscription` step when state is `active` (see "Risks and Caveats" in [COMBO.md](COMBO.md)).
+
+## 8. Cleanup / Post-Run
+
+```bash
+# Cancel before the trial ends to avoid recurring charges:
+# Google Play Store > Payments & subscriptions > Subscriptions > Google AI Pro > Cancel subscription
+```
+
+Access remains active until the end of the prepaid/trial period even after canceling.
+When Frida is no longer needed, stopping the daemon improves device stability:
 
 ```bash
 adb shell su -c "pkill -x frida-server"
-# magisk-frida モジュールを使っている場合
-adb shell su -c "touch /data/adb/modules/magisk-frida/disable"   # 次回起動から無効
+# If using the magisk-frida module:
+adb shell su -c "touch /data/adb/modules/magisk-frida/disable"   # Disable on next boot
 ```

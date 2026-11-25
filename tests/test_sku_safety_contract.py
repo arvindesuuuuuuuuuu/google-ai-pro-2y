@@ -1,14 +1,14 @@
-"""レビュー指摘に対する回帰テスト（読み取り専用の契約を固定する）。
+"""Regression tests for review findings locking down the read-only contract.
 
-根拠（実コードで確認済み）:
-- agent/injected.js:69 の `no_offers` は商品ごとに送られ `continue` する。
-  バッチ終端として扱うと残りの SKU が無言で未照会になる。
-- scripts/ultra0-17.py:563-564 の LIST_ONLY 付与は無検証の文字列置換で、
-  失敗すると agent は launchBillingFlow まで到達しうる（fail-open）。
-- frida の例外は Exception 直系で RuntimeError ではない。
-- done.wait() の戻り値（タイムアウト）は現状捨てられている。
+Verified from source:
+- `no_offers` in agent/injected.js:69 fires per SKU before `continue`; treating
+  it as batch-terminal silently drops remaining SKUs.
+- `LIST_ONLY` injection via unverified string replacement could fail open to
+  `launchBillingFlow`.
+- frida exceptions derive directly from Exception, not RuntimeError.
+- `done.wait()` timeout boolean must not be discarded.
 
-device / frida / network は使わない。
+Uses no device, frida, or network.
 """
 
 import dataclasses
@@ -32,7 +32,7 @@ import sku_scanner_core
 
 
 class _StubScript:
-    """load() 時に用意したイベントを順に流すだけのスクリプト。"""
+    """Stub script emitting preset events on load()."""
 
     def __init__(self, events):
         self.events = list(events)
@@ -71,7 +71,7 @@ class _StubDevice:
 
 
 class FakeSource:
-    """fetch(skus, timeout) と close() だけを持つ最小の情報源。"""
+    """Minimal source stub implementing fetch(skus, timeout) and close()."""
 
     def __init__(self, events=None, error=None, timed_out=False, pd_events=None):
         self.events = list(events or [])
@@ -92,11 +92,9 @@ class FakeSource:
 
 
 def _run(argv, source=None, factory=None):
-    """main() を stdout/stderr を捕まえて実行し、(code, out, err, calls) を返す。
+    """Run main() capturing stdout/stderr and return (code, out, err, calls).
 
-    source を渡した場合はそれを返す factory を、factory を渡した場合はそれを
-    そのまま使う。どちらも渡さない場合だけ main() 側の既定（実機接続）になる。
-    レポートの既定保存先は一時ディレクトリへ向け、repo を汚さない。
+    Redirects DEFAULT_REPORT_DIR to a temporary directory so the repo stays clean.
     """
     calls = []
     probe = factory if factory is not None else (lambda: (calls.append(1), source)[1])
@@ -109,7 +107,7 @@ def _run(argv, source=None, factory=None):
         ), redirect_stdout(out), redirect_stderr(err):
             try:
                 code = sku_scanner.main(argv, source_factory=probe)
-            except SystemExit as exc:  # argparse のエラー
+            except SystemExit as exc:  # argparse error
                 code = exc.code if isinstance(exc.code, int) else 1
     finally:
         temporary.cleanup()
@@ -147,24 +145,19 @@ class TerminalEventContractTests(unittest.TestCase):
         self.assertFalse(sku_scanner.FridaSource._is_forbidden(None))
 
     def test_empty_or_failed_pd_ends_the_batch_without_waiting_for_timeout(self):
-        """存在しない SKU では agent が no_trial を送らず return する。
+        """Missing SKUs return an empty `pd` event without emitting `no_trial`.
 
-        agent/injected.js は `pd` の code が 0 以外、または list が空のとき
-        何も送らずに戻る。これを終端扱いしないと、存在しない SKU を照会する
-        たびに必ずタイムアウトし、「端末異常」と誤読させる。
+        agent/injected.js returns early when `pd` code is non-zero or list is empty;
+        treating that as batch-terminal prevents false device timeouts on unknown SKUs.
         """
         pd_ends = sku_scanner.FridaSource._pd_terminates
-        self.assertTrue(pd_ends(0, 0), "0 件なら終端")
-        self.assertTrue(pd_ends(-1, 3), "エラーコードなら終端")
-        self.assertTrue(pd_ends(5, 0), "エラーかつ 0 件なら終端")
-        self.assertFalse(pd_ends(0, 2), "正常かつ結果ありなら継続")
+        self.assertTrue(pd_ends(0, 0), "Empty count must terminate batch")
+        self.assertTrue(pd_ends(-1, 3), "Non-zero code must terminate batch")
+        self.assertTrue(pd_ends(5, 0), "Non-zero code + empty count must terminate batch")
+        self.assertFalse(pd_ends(0, 2), "OK code with results must continue")
 
     def test_pd_termination_is_reported_as_empty_not_timeout(self):
-        """空の pd を受けたバッチはタイムアウト扱いにならない。
-
-        _run_batch をスタブのセッションで直接動かし、pd(0,0) だけを送る
-        スクリプトが「完了」と判定されることを確かめる。
-        """
+        """An empty `pd` batch completes without reporting a timeout."""
         source = sku_scanner.FridaSource()
         source._device = _StubDevice([{"ev": "pd", "code": 0, "n": 0}])
         source._pid = 1
@@ -173,12 +166,12 @@ class TerminalEventContractTests(unittest.TestCase):
         collected, timed_out, forbidden, script_error = source._run_batch("js")
 
         self.assertEqual(collected, [])
-        self.assertFalse(timed_out, "空の pd で完了していること")
+        self.assertFalse(timed_out, "Empty pd must finish cleanly without timeout")
         self.assertIsNone(forbidden)
         self.assertFalse(script_error)
 
     def test_batch_without_any_event_is_a_real_timeout(self):
-        """何も送られないバッチはタイムアウトとして区別される。"""
+        """A silent batch with zero events must be classified as a real timeout."""
         source = sku_scanner.FridaSource()
         source._device = _StubDevice([])
         source._pid = 1
@@ -218,12 +211,7 @@ class ReadOnlyGuaranteeTests(unittest.TestCase):
             sku_scanner.FridaSource._inject_products("var nothing;", ["g1.2tb.ai.1month_eft"])
 
     def test_load_js_does_not_write_new_bytecode(self):
-        """既存 .pyc の有無に依存せず、書き込み停止の仕組みそのものを確かめる。
-
-        既に .pyc があると before/after の比較は常に一致してしまい、
-        何も検証できない。そこで「読み込み後に sys.dont_write_bytecode が
-        元の値へ戻っていること」と「読み込み中は True だったこと」を見る。
-        """
+        """Verify bytecode writing is disabled during load regardless of cached .pyc files."""
         cache = REPO_ROOT / "scripts" / "__pycache__"
         before = set(cache.glob("ultra0-17*.pyc")) if cache.is_dir() else set()
         original = sys.dont_write_bytecode
@@ -231,15 +219,15 @@ class ReadOnlyGuaranteeTests(unittest.TestCase):
         real_exec_module = SourceFileLoader.exec_module
 
         def spy(loader, module):
-            # 実際に .pyc を書きうるのは exec_module の内部。
+            # Bytecode emission occurs inside exec_module.
             observed.append(sys.dont_write_bytecode)
             return real_exec_module(loader, module)
 
         with mock.patch.object(SourceFileLoader, "exec_module", spy):
             sku_scanner.FridaSource._load_js()
 
-        self.assertEqual(observed, [True], "読み込み中は書き込みを止めていること")
-        self.assertEqual(sys.dont_write_bytecode, original, "読み込み後に元へ戻すこと")
+        self.assertEqual(observed, [True], "sys.dont_write_bytecode must be True during load")
+        self.assertEqual(sys.dont_write_bytecode, original, "sys.dont_write_bytecode must be restored")
         after = set(cache.glob("ultra0-17*.pyc")) if cache.is_dir() else set()
         self.assertEqual(before, after)
 
@@ -288,7 +276,7 @@ class OutcomeReportingTests(unittest.TestCase):
             ["query", "--skus", "g1.2tb.ai.1month_eft"], source=source
         )
         self.assertNotEqual(code, 0)
-        self.assertIn("タイムアウト", err)
+        self.assertIn("timed out", err.lower())
 
 
 class CliHygieneTests(unittest.TestCase):

@@ -1,111 +1,103 @@
-# iOS での Google One / AI Pro オファー調査メモ（2026-11-25）
+# iOS Google One / AI Pro Offer Experiments (2026-11-25)
 
-Android 側（`scripts/ultra0-17.py` など）とは別に、iOS の Google アプリで
-何ができるかを試した記録。確定した事実と未検証を分けて書く。
+Separate from the Android tooling (`scripts/ultra0-17.py`, etc.), this note documents experiments run against the iOS Google app, separating confirmed facts from unverified claims.
 
-## 結論
+## Conclusions
 
-- iOS の Google アプリは `one.google.com/ai` の HTML（約 1.2 MB）に SKU 一覧を持つ。実測で 11 件取得した。
-- その一覧に**無料トライアル（`_eft`）は 1 件も無い**。すべて `_ip_`（割引）。
-- ただしアカウント個別に Ultra 1ヶ月無料が付与されることはある。実験中に実際に取得できた。
-- SKU 文字列の書き換え（`g1-acq` 方式）でオファーを作れるかは**まだ検証できていない**。
-  今回の成功は書き換えを使っていない。
+- The iOS Google app fetches its SKU catalog inside HTML from `one.google.com/ai` (~1.2 MB); 11 entries were captured live.
+- None of those 11 catalog entries are **free trials (`_eft`)** -- every promotional SKU in the catalog is `_ip_` (percentage discount).
+- However, individual accounts can still receive an Ultra 1-month free trial directly, and one was successfully claimed during testing.
+- Whether SKU string rewriting (the `g1-acq` technique) can actually *create* a free trial offer remains **unverified**; the successful claim during this test occurred without any rewrite firing.
 
-## やったこと（時系列）
+## Timeline of What Was Tested
 
-1. mitmproxy を Tailscale 経由で立て、iPhone の HTTPS を復号した。
-   証明書ピニングは Google 系ホストには無く、復号できた。
-2. 観測のみのモードで `one.google.com/ai` から SKU 一覧を取得（11 件）。
-3. `g1-acq` v7.6.0 と同じ書き換えマッピングを実装して有効化した。
-4. 購入を試すと失敗した。原因は Apple の決済エンドポイント
-   （`bag.itunes.apple.com`、`gateway.icloud.com`）がピニングで
-   MITM を拒否していたこと。プロキシ経由では購入自体が不可能だった。
-5. Apple 系ドメインを MITM 対象外（`--ignore-hosts`）にした。
-6. 購入が通り、**Ultra 1ヶ月無料**を取得できた。
+1. Started `mitmproxy` over Tailscale and decrypted iPhone HTTPS traffic. Google hosts had no certificate pinning and decrypted cleanly.
+2. Observed `one.google.com/ai` in passive mode and extracted 11 SKU entries.
+3. Implemented and enabled the same rewrite mapping used by `g1-acq` v7.6.0.
+4. Attempting a purchase failed because Apple payment endpoints (`bag.itunes.apple.com`, `gateway.icloud.com`) enforce certificate pinning and reject MITM, breaking checkout through the proxy.
+5. Excluded Apple domains from MITM (`--ignore-hosts`).
+6. Checkout succeeded and claimed an **Ultra 1-month free trial**.
 
-## いちばん大事な切り分け
+## Key Isolation Finding
 
-**書き換えは一度も実行されていない。**
+**Zero rewrites actually executed during the successful claim.**
 
-- 書き換えは `one.google.com/ai` の取得時にしか動かない
-- 再起動後、`/ai` は WebView のキャッシュから読まれ、再取得されなかった
-- ログの `REWRITE` 行は 0 件
+- Rewrites only trigger when `one.google.com/ai` is freshly fetched over the network.
+- After app restart, `/ai` was served from WebView cache without hitting the network.
+- `REWRITE` entries in the proxy log: `0`.
 
-したがって「Ultra 1ヶ月無料」は、**アカウントに元から用意されていたオファー**が、
-購入経路の修復によって普通に通ったもの。`g1-acq` の手法が効いた証拠にはならない。
+Therefore, the Ultra 1-month free trial was **already offered to that account server-side** and simply went through once Apple payment domains were excluded from MITM. This does not prove that `g1-acq` rewriting works.
 
-## iOS で観測した SKU（実測）
+## SKUs Observed Live on iOS
 
-| SKU | 期間 | 内容 |
+| SKU | Billing Cycle | Description |
 |---|---|---|
-| `g1.ios.ai.2tb.m.ip_1mo_90p.acq` | 月払い | 初月 90% オフ |
-| `g1.ios.ai.2tb.a.ip_1yr_10p.acq` | 年払い | 1 年 10% オフ |
-| `g1.ios.helium.m.1month_ip_90p.acq` | 月払い | 初月 90% オフ |
-| `g1.ios.helium.a.ip_1yr_10p.acq` | 年払い | 1 年 10% オフ |
-| `g1.ios.2tb.m.3month_ip_75p` | 月払い | 3 ヶ月 75% オフ |
-| `g1.ios.100gb.m.3month_ip_75p` | 月払い | 3 ヶ月 75% オフ |
-| `g1.ios.2tb.a.12month_ip_15p` | 年払い | 12 ヶ月 15% オフ |
-| `g1.ios.100gb.a.12month_ip_15p` | 年払い | 12 ヶ月 15% オフ |
-| `g1.ios.20tb.m.v2` | 月払い | Ultra 20TB の入口 |
-| `g1.ios.30tb.ai.pro.m` | 月払い | Ultra 30TB の入口 |
-| `com.google.one.generic` | — | 汎用 |
+| `g1.ios.ai.2tb.m.ip_1mo_90p.acq` | Monthly | 90% off first month |
+| `g1.ios.ai.2tb.a.ip_1yr_10p.acq` | Annual | 10% off 1 year |
+| `g1.ios.helium.m.1month_ip_90p.acq` | Monthly | 90% off first month |
+| `g1.ios.helium.a.ip_1yr_10p.acq` | Annual | 10% off 1 year |
+| `g1.ios.2tb.m.3month_ip_75p` | Monthly | 75% off for 3 months |
+| `g1.ios.100gb.m.3month_ip_75p` | Monthly | 75% off for 3 months |
+| `g1.ios.2tb.a.12month_ip_15p` | Annual | 15% off for 12 months |
+| `g1.ios.100gb.a.12month_ip_15p` | Annual | 15% off for 12 months |
+| `g1.ios.20tb.m.v2` | Monthly | Ultra 20TB entry SKU |
+| `g1.ios.30tb.ai.pro.m` | Monthly | Ultra 30TB entry SKU |
+| `com.google.one.generic` | -- | Generic SKU |
 
-命名は `g1.ios.<tier>.<m|a>.<期間>_ip_<割引率>p[.acq]`。
+Naming pattern: `g1.ios.<tier>.<m|a>.<duration>_ip_<discount>p[.acq]`.
 
-- `m` / `a` は月払い / 年払い
-- `ip_90p` は 90% オフ。`15p` なら 15% オフ
-- `.acq` は獲得向けプロモの目印
-- `helium`、`ai.2tb`、`100gb` は Android 側のスキャン対象に無い tier
+- `m` / `a`: monthly / annual
+- `ip_90p`: 90% off (`15p` = 15% off)
+- `.acq`: acquisition promo marker
+- `helium`, `ai.2tb`, and `100gb` are tiers not present in the Android scanner's candidate list
 
-## Android 側との違い
+## Differences from Android
 
 | | iOS | Android |
 |---|---|---|
-| 接頭 | `g1.ios.` | `g1.` |
-| tier の語順 | `ai.2tb`（容量が後） | `2tb.ai`（容量が先） |
-| 無料トライアル | カタログには無い（個別付与はあり） | `_eft` が存在（例 `g1.2tb.ai.18months_eft`） |
+| Prefix | `g1.ios.` | `g1.` |
+| Tier word order | `ai.2tb` (tier name first) | `2tb.ai` (capacity first) |
+| Free trials | Absent from catalog (account-granted only) | `_eft` exists (e.g., `g1.2tb.ai.18months_eft`) |
 
-iOS の ID は Android の ID とそのまま対応しない。名前が似ていても別の商品。
+iOS product IDs do not map 1:1 to Android SKU IDs; similar names refer to distinct StoreKit vs. Play Billing products.
 
-## `g1-acq` v7.6.0 の主張
+## Claims in `g1-acq` v7.6.0
 
-<https://github.com/crhywun/g1-acq>
+Upstream repo: <https://github.com/crhywun/g1-acq>
 
-モジュール説明文:
+Module description (translated):
 
+```text
+v7.6.0: Supports Ultra 1-month free trial (20TB: g1.20tb.1month_eft.acq,
+        30TB: g1.ai.ultra.1month_eft.acq), with each tier independently falling back to 3-month 90% off.
 ```
-v7.6.0：支持 Ultra 1个月免费试用，20TB g1.20tb.1month_eft.acq、
-        30TB g1.ai.ultra.1month_eft.acq，各档独立回退三个月90p备用
-```
 
-| 元 | 変換先 |
+| Source | Rewritten Target |
 |---|---|
-| `g1.ios.2tb.` で始まる ID | `g1.2tb.ai.12months_ip_90p` |
+| IDs starting with `g1.ios.2tb.` | `g1.2tb.ai.12months_ip_90p` |
 | `g1.ios.20tb.m.v2` | `g1.20tb.1month_eft.acq` |
 | `g1.ios.30tb.ai.pro.m` | `g1.ai.ultra.1month_eft.acq` |
 
-同じ README に「試用が現在のアカウントに表示されるかは App Store の記録次第」と
-いう留保が書かれている。
+The same README notes the caveat that whether a trial appears on the current account depends on App Store history.
 
-### 未解決の報告
+### Open Issues Upstream
 
-- issue #2（open）: 書き換え自体は成功するが、Apple の收銀台で
-  "Unable to Complete Purchase" になる。モジュールを切ると通常購入は成功する
-- issue #1（open）: レポートが空で、Google アプリは原価のまま
+- issue #2 (open): Rewrite executes, but Apple checkout fails with `"Unable to Complete Purchase"`. Disabling the module allows normal purchase to succeed.
+- issue #1 (open): Empty report; the Google app continues showing full price.
 
-書き換えで購入まで通ったという報告は、確認した範囲では存在しない。
+No verified report confirms a successful purchase completed via SKU rewriting.
 
-## 再現に使ったもの
+## Reproduction Setup
 
-`~/Documents/repos/g1-mitm-observe/`（このリポジトリの外）
+Stored outside this repository at `~/Documents/repos/g1-mitm-observe/`:
 
-- `addon.py` … mitmproxy アドオン。観測と、任意の SKU 書き換え
-- `g1_observe.py` … SKU 抽出・書き換え・集計の純粋ロジック
-- `report.py` … 観測レポートの集計 CLI
-- `docs/ios-sku-naming.md` … 命名規則の詳細
-- テスト 47 件（`python3 -m unittest discover -s tests`）
+- `addon.py`: `mitmproxy` addon for observation and optional SKU rewriting
+- `g1_observe.py`: Pure logic for SKU extraction, rewriting, and aggregation
+- `report.py`: CLI report summarizer
+- `docs/ios-sku-naming.md`: Naming convention reference
+- 47 unit tests (`python3 -m unittest discover -s tests`)
 
-起動例:
+Launch example:
 
 ```bash
 mitmdump --listen-host 0.0.0.0 --listen-port 8080 -s addon.py \
@@ -115,17 +107,14 @@ mitmdump --listen-host 0.0.0.0 --listen-port 8080 -s addon.py \
   --ignore-hosts '^(.*\.)?apple\.com:443|^(.*\.)?icloud\.com:443'
 ```
 
-`--ignore-hosts` が無いと Apple の決済が失敗する。ここが今回いちばんの要点。
+Without `--ignore-hosts`, Apple checkout fails -- that exclusion was the critical fix.
 
-書き換えを試すときは `--set g1_rewrite=true` と `g1_map` / `g1_prefix` を足す。
-ただし `/ai` が再取得されないと動かないため、事前に WebView のキャッシュを
-消す必要がある（未検証）。
+To test rewriting, add `--set g1_rewrite=true` along with `g1_map` / `g1_prefix`. Because `/ai` will not be rewritten unless fetched fresh from the network, WebView cache must be cleared beforehand (untested).
 
-## 未検証・注意
+## Untested Items & Warnings
 
-- 書き換えで Ultra 無料を「作れる」かは未検証。今回の取得は書き換え無し
-- `g1.20tb.1month_eft.acq` は実測カタログに存在しない ID。書き換えても
-  存在しない商品を要求することになる可能性が高い
-- iOS のトライアルはアカウント個別付与なので、同じ手順で誰でも取れるとは限らない
-- 無料トライアルは期限後に自動更新される。解約期限の確認を忘れないこと
-- プロキシを立てている間は端末の全通信が経由する。不要になったら止める
+- Whether rewriting can actually *produce* an Ultra free trial remains unverified; the claim during testing occurred without rewriting.
+- `g1.20tb.1month_eft.acq` does not exist in the observed iOS catalog; rewriting to it likely requests a nonexistent product.
+- iOS trials appear to be granted per account, so results are not guaranteed for every account.
+- Free trials auto-renew upon expiration -- check your cancellation deadline.
+- While the proxy is active, all device traffic routes through it; shut it down when finished.

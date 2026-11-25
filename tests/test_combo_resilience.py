@@ -1,9 +1,9 @@
-"""コンボ実行の耐障害性に関するテスト。
+"""Resilience tests for combo execution.
 
-「途中までプランを持っている人」は、すでに使用済みのオファーが候補に残る。
-そこで中断してしまうと、後ろにある未使用の +6ヶ月オファーに到達できない。
-使用済み・不成立のステップは飛ばして続行し、1 つでも成功すれば成功として
-扱うことを固定する。
+Accounts with partial progress retain already-redeemed offers as candidates.
+Stopping on an already-used offer prevents reaching later unused +6-month
+offers, so used or ineligible steps must be skipped by default and the run
+succeeds if at least one step extends expiration.
 """
 
 import io
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import combo
 import combo_core as core
 
-NOW_MS = 1_764_000_000_000  # 2025-11-24 相当（テスト内の固定値）
+NOW_MS = 1_764_000_000_000  # Approx. 2025-11-24 fixed fixture timestamp
 DAY_MS = 24 * 60 * 60 * 1000
 
 
@@ -44,7 +44,7 @@ def _offers():
 
 
 class _SteppingState:
-    """executor が呼ばれるたびに期限を進める状態読み出し。"""
+    """State reader that advances expiration each time executor runs."""
 
     def __init__(self, start_ms, advances):
         self.end = start_ms
@@ -75,7 +75,7 @@ class ResilientExecutionTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_already_used_offer_is_skipped_and_later_steps_still_run(self):
-        """1手目（使用済み）が伸びなくても、後続の +6ヶ月 は実行される。"""
+        """Even if step 1 is already redeemed, subsequent +6m offers still run."""
         state = _SteppingState(NOW_MS, advances=[0, 6 * 30 * DAY_MS, 6 * 30 * DAY_MS])
         executed = []
 
@@ -92,9 +92,9 @@ class ResilientExecutionTests(unittest.TestCase):
         self.assertEqual(
             executed,
             ["12months-eft", "6months-eft", "6months-eft-2"],
-            "使用済みでも全ステップを試すこと",
+            "All candidate steps must be attempted even when an early step is already redeemed",
         )
-        self.assertEqual(code, 0, "1 つでも成功していれば成功として扱う")
+        self.assertEqual(code, 0, "Should succeed if at least one step extends expiration")
         self.assertIn("6months-eft", out)
 
     def test_all_steps_failing_returns_non_zero(self):
@@ -129,7 +129,7 @@ class ResilientExecutionTests(unittest.TestCase):
             executor,
         )
 
-        self.assertEqual(executed, ["12months-eft"], "厳格モードでは最初の失敗で止まる")
+        self.assertEqual(executed, ["12months-eft"], "Strict mode stops on first failure")
         self.assertNotEqual(code, 0)
 
     def test_cannot_open_billing_screen_also_continues_by_default(self):

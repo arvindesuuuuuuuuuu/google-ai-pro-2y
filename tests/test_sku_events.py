@@ -1,4 +1,4 @@
-"""offer イベントの解析・機微情報排除・重複排除・レポート検証のテスト。"""
+"""Tests for offer event parsing, secret stripping, deduplication, and report validation."""
 
 import dataclasses
 import sys
@@ -26,7 +26,7 @@ def _offer(**overrides):
         "id": "offer-1",
         "period": "P1M",
         "micros": "990000",
-        "title": "スタンダード",
+        "title": "Standard",
     }
     event.update(overrides)
     return event
@@ -42,7 +42,7 @@ class OfferEventTests(unittest.TestCase):
             {"type": "send", "payload": _offer(id="from-envelope", micros=100)},
             _offer(id="numeric-micros", micros=250000),
             _offer(id="non-numeric-micros", micros="free"),
-            _offer(id="name-title", name="名前から取得", title=None),
+            _offer(id="name-title", name="From name field", title=None),
             "not-an-event-object",
         ]
 
@@ -57,7 +57,7 @@ class OfferEventTests(unittest.TestCase):
         self.assertEqual(rows[0].micros, 100)
         self.assertEqual(rows[1].micros, 250000)
         self.assertIsNone(rows[2].micros)
-        self.assertEqual(rows[3].title, "名前から取得")
+        self.assertEqual(rows[3].title, "From name field")
 
     def test_parse_offer_events_drops_all_token_like_fields(self):
         event = _offer()
@@ -76,8 +76,8 @@ class OfferEventTests(unittest.TestCase):
 
     def test_dedupe_rows_keeps_first_row_for_identical_offer_identity(self):
         events = [
-            _offer(token="first-token", title="最初"),
-            _offer(token="second-token", title="二番目"),
+            _offer(token="first-token", title="First"),
+            _offer(token="second-token", title="Second"),
         ]
         rows = sku_scanner_core.parse_offer_events(events)
         self.assertEqual(len(rows), 2)
@@ -85,7 +85,7 @@ class OfferEventTests(unittest.TestCase):
         deduped = sku_scanner_core.dedupe_rows(rows)
 
         self.assertEqual(len(deduped), 1)
-        self.assertEqual(deduped[0].title, "最初")
+        self.assertEqual(deduped[0].title, "First")
         self.assertEqual(
             set(dataclasses.asdict(deduped[0])),
             {"sku", "offer_id", "period", "micros", "title"},

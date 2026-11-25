@@ -1,29 +1,25 @@
-# docs インデックス
+# Docs Index
 
-`docs/` にある文書の一覧です。詳細は各ファイルを開いてください。
+Index of documentation in `docs/`. Open each file for full details.
 
-| ファイル | 内容 |
+| File | Description |
 |---|---|
-| [SETUP.md](SETUP.md) | 環境構築と実行順序（PC 側・端末側・frida の準備） |
-| [SKU-SCANNER.md](SKU-SCANNER.md) | SKU スキャナ（読み取り専用）の使い方と出力の読み方 |
-| [COMBO.md](COMBO.md) | コンボ計画・実行の使い方、判定ロジック、注意点 |
-| [ANDROID16-NOTES.md](ANDROID16-NOTES.md) | Android 16 / frida 17 で必要だった改造の技術メモ |
-| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 実際に踏んだエラーと、症状別の対処 |
-| [RESULTS.md](RESULTS.md) | 実測ログ（どのオファーで期限がどう伸びたか） |
-| [IOS-EXPERIMENTS.md](IOS-EXPERIMENTS.md) | iOS で試した記録（観測・書き換え・確定と未検証の切り分け） |
+| [SETUP.md](SETUP.md) | Environment setup and execution order (PC, device, and frida preparation) |
+| [SKU-SCANNER.md](SKU-SCANNER.md) | Read-only SKU scanner usage and output interpretation |
+| [COMBO.md](COMBO.md) | Combo planner/runner usage, state logic, and caveats |
+| [ANDROID16-NOTES.md](ANDROID16-NOTES.md) | Technical notes on fixes required for Android 16 / frida 17 |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Observed errors and symptom-based remedies |
+| [RESULTS.md](RESULTS.md) | Measured run logs (offers applied and expiration changes) |
+| [IOS-EXPERIMENTS.md](IOS-EXPERIMENTS.md) | iOS experiment notes (separating observations, rewrites, confirmed facts, and untested items) |
 
-## 読む順番
+## Reading Order
 
-初めて触る場合は、次の順で読むと迷いません。
+If this is your first time using the toolkit, follow this order:
 
-1. [SETUP.md](SETUP.md) から読みます。まず環境を作ります。ここが通らないと先に進めません。
-2. 状態確認です。[SKU-SCANNER.md](SKU-SCANNER.md) でどんな offer があるか読み、
-   [COMBO.md](COMBO.md) の `combo plan --device` で自分のアカウントの状態と計画を確認します。
-   ここまでは読み取りだけで、課金は起きません。
-3. 実行です。計画に納得してから [COMBO.md](COMBO.md) の `combo run`、または
-   `step1`〜`step4` を実行します。金額と期間は端末の画面で自分で確認してください。
+1. Start with [SETUP.md](SETUP.md) to build your environment. Nothing else works until setup passes.
+2. Inspect current state. Read [SKU-SCANNER.md](SKU-SCANNER.md) to check available offers, then run `combo plan --device` per [COMBO.md](COMBO.md) to inspect your account state and recommended plan. Both steps are read-only and trigger no charges.
+3. Execute. Once satisfied with the plan, run `combo run` from [COMBO.md](COMBO.md) or `step1` through `step4`. Always verify pricing and duration directly on your device screen.
 
-うまく動かないときは [TROUBLESHOOTING.md](TROUBLESHOOTING.md)、
-なぜ改造が必要だったかは [ANDROID16-NOTES.md](ANDROID16-NOTES.md) を参照してください。
+Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) when hitting issues, and [ANDROID16-NOTES.md](ANDROID16-NOTES.md) for why the Android 16 / frida 17 changes were necessary.
 
-実行前に [../DISCLAIMER.md](../DISCLAIMER.md) と [../SECURITY.md](../SECURITY.md) も必ず目を通してください。
+Be sure to read [../DISCLAIMER.md](../DISCLAIMER.md) and [../SECURITY.md](../SECURITY.md) before running anything.

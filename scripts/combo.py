@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""combo.py —— アカウント状態に応じて無料オファーの積み上げを計画・実行する。
+"""combo.py -- Plan and execute free Google AI Pro offer stacking by account state.
 
-設計の要点:
-
-- 既定はドライラン。端末に触れるのは ``--device`` を明示したときだけ。
-  （``--device`` 無しで端末を読みに行くと、意図しない端末で事故るため）
-- 実行には ``--execute`` と ``--yes`` の両方が必要。
-- 課金画面を開くところまでがスクリプトの仕事で、支払いの確定は必ず人が行う。
-  タップ・確定・カード追加は一切しない（``ultra0-17.confirm_zero()`` も呼ばない）。
+Key safety gates:
+- Dry-run by default. Never touches a connected device unless `--device` is passed.
+- Execution requires both `--execute` and `--yes`.
+- Stops after opening the Play checkout screen; the operator always confirms
+  payment manually (never taps Subscribe, confirms, or calls `confirm_zero()`).
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ import combo_core as core
 VENDING_PKG = "com.android.vending"
 LIBRARY_DB = f"/data/data/{VENDING_PKG}/databases/library.db"
 
-# 2026-11-24 の実測で無料だった SKU。1month_eft は何も返らないため含めない。
+# Verified free SKUs on 2026-11-24. 1month_eft returned empty so it is omitted.
 DEFAULT_OFFER_SKUS = (
     "g1.2tb.ai.2months_eft",
     "g1.2tb.ai.3months_eft",
@@ -47,7 +45,7 @@ DEFAULT_OFFER_SKUS = (
     "g1.2tb.ai.subs_variant",
 )
 
-# build_js(plan="auto", list_only=False) の生出力に 1 回ずつ現れるリテラル。
+# Literals appearing once each in raw build_js(plan="auto", list_only=False) output.
 PRODUCTS_LITERAL = 'var PRODUCTS = ["g1.play.20tb", "g1.play.ai.pro", "g1.30tb"];'
 PREFER_LITERAL = 'var PREFER = "";'
 LIST_ONLY_LITERAL = "var LIST_ONLY=true;"
@@ -59,10 +57,10 @@ EXIT_USAGE = 2
 EXIT_NO_DEVICE = 3
 
 DEVICE_HINT = (
-    "端末から状態と offer を読むには --device を指定してください"
-    "（このコマンドは既定では端末に触れません）。"
+    "Pass --device to read subscription state and offers from a connected device "
+    "(this command does not touch any device by default)."
 )
-EXECUTE_HINT = "実行するには --execute --yes が必要です"
+EXECUTE_HINT = "To execute, pass both --execute --yes"
 
 COMMANDS = ("plan", "run")
 
@@ -70,13 +68,13 @@ TERMINAL_FAILURE_EVENTS = frozenset({"no_trial", "no_offers", "no_activity"})
 
 
 # --------------------------------------------------------------------------
-# 端末からの読み取り（読み取り専用）
+# Read-only device inspection
 # --------------------------------------------------------------------------
 GOOGLE_ONE_PACKAGE = "com.google.android.apps.subscriptions.red"
 
 
 def _is_google_one_foreground(dump: Optional[str]) -> bool:
-    """`dumpsys activity activities` の出力に Google One が前面かを見る。"""
+    """Return True if Google One appears in `dumpsys activity activities`."""
     if not dump:
         return False
     return GOOGLE_ONE_PACKAGE in str(dump)
@@ -84,14 +82,14 @@ def _is_google_one_foreground(dump: Optional[str]) -> bool:
 
 def _no_activity_hint() -> str:
     return (
-        "Google One に生きた画面（Activity）がありません。"
-        "端末で Google One を開いて前面に表示してから、もう一度実行してください"
-        "（アプリを起動しない設定の場合はご自身で開く必要があります）。"
+        "Google One has no active foreground Activity. "
+        "Open Google One on your device so it is in the foreground, then retry "
+        "(or pass --open-app to bring it to the foreground automatically)."
     )
 
 
 def _foreground_dump(timeout: float = 30) -> str:
-    """前面アクティビティの情報を読むだけ（書き込みなし）。"""
+    """Read foreground activity dump without altering device state."""
     try:
         return _adb("shell", "dumpsys activity activities", timeout=timeout)
     except RuntimeError:
@@ -105,104 +103,107 @@ def _adb_prefix() -> list:
 
 
 def _adb(*args: str, timeout: float = 60) -> str:
-    """adb を 1 回実行する。失敗は日本語 1 行の RuntimeError にまとめる。"""
+    """Run one adb command and wrap failures in a single-line RuntimeError."""
     command = _adb_prefix() + list(args)
     try:
         completed = subprocess.run(command, capture_output=True, timeout=timeout)
     except FileNotFoundError as exc:
         raise RuntimeError(
-            "adb が見つかりません（platform-tools を入れるか ADB_PATH を設定してください）"
+            "adb not found (install Android platform-tools or set ADB_PATH)"
         ) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"adb がタイムアウトしました: adb {args[0]}") from exc
+        raise RuntimeError(f"adb timed out: adb {args[0]}") from exc
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", "ignore").strip()[:200]
-        raise RuntimeError(f"adb が失敗しました（adb {args[0]}）: {detail}")
+        raise RuntimeError(f"adb failed (adb {args[0]}): {detail}")
     return completed.stdout.decode("utf-8", "ignore")
 
 
-def read_state(timeout: float = 60) -> list:
-    """Play の library.db から所有行を読む（端末側・ホスト側のコピーは必ず消す）。
-
-    書き込みはせず、/data/local/tmp と一時ファイルの 2 つを作って削除するだけ。
-    """
-    remote = f"/data/local/tmp/combo_library_{os.getpid()}.db"
-    local = Path(tempfile.gettempdir()) / f"combo_library_{os.getpid()}.db"
+def _query_library_db(
+    prefix: str, query: str, params: tuple, timeout: float
+) -> list:
+    """Copy Play's library.db via direct shell or Magisk su -c and run one query."""
+    remote = f"/data/local/tmp/{prefix}_{os.getpid()}.db"
+    local = Path(tempfile.gettempdir()) / f"{prefix}_{os.getpid()}.db"
+    copy_cmd = (
+        f"(cp {LIBRARY_DB} {remote} 2>/dev/null || su -c 'cp {LIBRARY_DB} {remote}') "
+        f"&& (chmod 666 {remote} 2>/dev/null || su -c 'chmod 666 {remote}')"
+    )
     try:
-        _adb(
-            "shell",
-            f"cp {LIBRARY_DB} {remote} 2>/dev/null; chmod 666 {remote}",
-            timeout=timeout,
-        )
+        _adb("shell", copy_cmd, timeout=timeout)
         try:
             local.unlink()
         except FileNotFoundError:
             pass
         _adb("pull", remote, str(local), timeout=timeout)
         if not local.exists() or local.stat().st_size == 0:
-            raise RuntimeError(
-                "library.db を取得できませんでした"
-                "（root 権限と Play へのログインを確認してください）"
-            )
+            return []
         connection = sqlite3.connect(f"file:{local}?mode=ro", uri=True)
         try:
-            rows = connection.execute(
-                "select doc_id, account, subs_valid_until_time from ownership"
-            ).fetchall()
+            return connection.execute(query, params).fetchall()
         finally:
             connection.close()
-        return core.parse_ownership_rows(rows)
     finally:
         try:
             _adb("shell", f"rm -f {remote}", timeout=timeout)
-        except Exception:  # noqa: BLE001 - 後始末の失敗で元の例外を隠さない
+        except Exception:  # noqa: BLE001 - never mask original failure during cleanup
             pass
         try:
             local.unlink()
         except OSError:
             pass
+
+
+def read_state(timeout: float = 60) -> list:
+    """Read ownership rows from Play's library.db (cleans up remote/local copies)."""
+    rows = _query_library_db(
+        "combo_library",
+        "select doc_id, account, subs_valid_until_time from ownership",
+        (),
+        timeout,
+    )
+    if not rows:
+        # Distinguish genuinely empty table from unreadable DB by verifying pullability.
+        remote = f"/data/local/tmp/combo_check_{os.getpid()}.db"
+        local = Path(tempfile.gettempdir()) / f"combo_check_{os.getpid()}.db"
+        try:
+            _adb(
+                "shell",
+                f"(cp {LIBRARY_DB} {remote} 2>/dev/null || su -c 'cp {LIBRARY_DB} {remote}') "
+                f"&& (chmod 666 {remote} 2>/dev/null || su -c 'chmod 666 {remote}')",
+                timeout=timeout,
+            )
+            _adb("pull", remote, str(local), timeout=timeout)
+            if not local.exists() or local.stat().st_size == 0:
+                raise RuntimeError(
+                    "Could not read library.db "
+                    "(verify root access and Play Store login on device)"
+                )
+        finally:
+            try:
+                _adb("shell", f"rm -f {remote}", timeout=timeout)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                local.unlink()
+            except OSError:
+                pass
+    return core.parse_ownership_rows(rows)
 
 
 def read_stack_token(account: str, sku: str = "g1.2tb.ai.subs_variant", timeout: float = 60) -> str:
-    """Play の library.db から、対象アカウントの purchaseToken を読む。
+    """Read purchaseToken for the target account from Play's library.db.
 
-    agent の `queryPurchasesAsync` は実機でコールバックが返らず積み上げが
-    止まったため、このリポジトリで実績のある「トークンを直接渡す」経路を使う。
-    読み取りのみで、端末側・ホスト側のコピーは必ず削除する。
+    queryPurchasesAsync callbacks can stall on real devices, so reading
+    ownership.inapp_purchase_data directly avoids blocking stacking flows.
     """
-    remote = f"/data/local/tmp/combo_token_{os.getpid()}.db"
-    local = Path(tempfile.gettempdir()) / f"combo_token_{os.getpid()}.db"
-    try:
-        _adb(
-            "shell",
-            f"cp {LIBRARY_DB} {remote} 2>/dev/null; chmod 666 {remote}",
-            timeout=timeout,
-        )
-        try:
-            local.unlink()
-        except FileNotFoundError:
-            pass
-        _adb("pull", remote, str(local), timeout=timeout)
-        if not local.exists() or local.stat().st_size == 0:
-            return ""
-        connection = sqlite3.connect(f"file:{local}?mode=ro", uri=True)
-        try:
-            rows = connection.execute(
-                "select account, subs_valid_until_time, inapp_purchase_data "
-                "from ownership where doc_id like ?",
-                (f"%{sku}%",),
-            ).fetchall()
-        finally:
-            connection.close()
-    finally:
-        try:
-            _adb("shell", f"rm -f {remote}", timeout=timeout)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            local.unlink()
-        except OSError:
-            pass
+    rows = _query_library_db(
+        "combo_token",
+        "select account, subs_valid_until_time, inapp_purchase_data "
+        "from ownership where doc_id like ?",
+        (f"%{sku}%",),
+        timeout,
+    )
 
     want = (account or "").strip().lower()
     best = None
@@ -231,7 +232,7 @@ def read_offers(
     batch_size: int = 20,
     skus: Optional[Sequence[str]] = None,
 ) -> list:
-    """読み取り専用スキャナ（list_only）で offer を集める。エージェントは再実装しない。"""
+    """Collect offers via the read-only sku_scanner FridaSource."""
     import sku_scanner
     import sku_scanner_core
 
@@ -242,7 +243,7 @@ def read_offers(
         source.close()
     if getattr(source, "timed_out", False):
         print(
-            "警告: offer の読み取りがタイムアウトしました（結果は不完全な可能性があります）。",
+            "Warning: offer scan timed out (results may be incomplete).",
             file=sys.stderr,
         )
     return [
@@ -257,15 +258,14 @@ def read_offers(
 
 
 # --------------------------------------------------------------------------
-# 課金画面を開く実行者（タップ・確定はしない）
+# Checkout screen launcher (never taps or confirms payment)
 # --------------------------------------------------------------------------
 class RealExecutor:
-    """対象 SKU / offerId で課金画面を開くだけの実行者。
+    """Opens the Play checkout sheet for a target SKU and offerId.
 
-    ``ultra0-17.py`` の ``build_js(plan="auto", list_only=False)`` を読み込み、
-    PRODUCTS と PREFER のリテラルを対象に差し替える。読み取り専用フラグ
-    （LIST_ONLY）が残っていたら課金画面が開かないので、その場合は中止する。
-    ``launch_app()`` / ``confirm_zero()`` / ``add_card()`` は呼ばない。
+    Loads build_js(plan="auto", list_only=False) from ultra0-17.py, substitutes
+    PRODUCTS and PREFER, and aborts if LIST_ONLY remains. Never invokes
+    launch_app(), confirm_zero(), or add_card().
     """
 
     def __init__(
@@ -288,11 +288,7 @@ class RealExecutor:
         return read_stack_token(self.account, timeout=self.timeout)
 
     def _ensure_foreground(self) -> None:
-        """課金画面は Google One の生きた Activity からしか開けない。
-
-        前面に無いと agent は `no_activity` を送って何も表示せずに終わる。
-        そのため実行前に前面かどうかを確かめ、必要なら明示指定時だけ前面化する。
-        """
+        """Require a live foreground Google One Activity so launchBillingFlow succeeds."""
         if _is_google_one_foreground(_foreground_dump(self.timeout)):
             return
         if self.open_app:
@@ -317,7 +313,7 @@ class RealExecutor:
         path = Path(__file__).resolve().parent / "ultra0-17.py"
         spec = importlib.util.spec_from_file_location("ultra0_17_combo", str(path))
         if spec is None or spec.loader is None:
-            raise RuntimeError(f"エージェント生成モジュールを読み込めません: {path}")
+            raise RuntimeError(f"Could not load agent builder module: {path}")
         module = importlib.util.module_from_spec(spec)
         previous = sys.dont_write_bytecode
         sys.dont_write_bytecode = True
@@ -327,19 +323,15 @@ class RealExecutor:
             sys.dont_write_bytecode = previous
         build_js = getattr(module, "build_js", None)
         if build_js is None:
-            raise RuntimeError(f"build_js() が見つかりません: {path}")
+            raise RuntimeError(f"build_js() not found in {path}")
         return build_js
 
     def build_js(self, action: core.ComboAction, old_token: str = "") -> str:
-        """対象 SKU / offerId を差し込んだ JS を作り、差し替えを検証する。"""
+        """Assemble and verify the injected Frida JS for one ComboAction."""
         return self._assemble(action, old_token=old_token)
 
     def _assemble(self, action: core.ComboAction, old_token: str = "") -> str:
-        """JS を組み立てる（端末に触れないのでテストから直接呼べる）。
-
-        積み上げでは ``STACK`` を立てる。これが無いと agent は
-        ``launch(pd, offer)``（新規購入）を呼び、既存サブスクには適用されない。
-        """
+        """Build agent JS cleanly with no device access (testable offline)."""
         is_stack = getattr(action, "kind", "") == "stack"
         js = self._load_build_js()(
             plan="auto",
@@ -348,22 +340,22 @@ class RealExecutor:
             old_token=old_token or "",
         )
         if not isinstance(js, str) or not js:
-            raise RuntimeError("エージェント JS が空です（中止します）")
+            raise RuntimeError("Agent JS is empty (aborting)")
         if LIST_ONLY_LITERAL in js:
             raise RuntimeError(
-                "エージェント JS に読み取り専用フラグが残っています"
-                "（このままでは課金画面が開かないため中止します）"
+                "Read-only flag LIST_ONLY remained in agent JS "
+                "(aborting because checkout cannot open)"
             )
         for literal, label in ((PRODUCTS_LITERAL, "PRODUCTS"), (PREFER_LITERAL, "PREFER")):
             if js.count(literal) != 1:
                 raise RuntimeError(
-                    f"エージェント JS の {label} リテラルがちょうど 1 つ見つかりません"
-                    "（対象を安全に差し替えられないため中止します）"
+                    f"Expected exactly one {label} literal in agent JS "
+                    "(aborting because target substitution is unsafe)"
                 )
         if is_stack and STACK_LITERAL not in js:
             raise RuntimeError(
-                "積み上げ用フラグ（STACK）を立てられませんでした。"
-                "このままでは新規購入として扱われ、積み上げできません（中止します）"
+                "Failed to inject STACK flag; "
+                "continuing would launch a new purchase instead of stacking (aborting)"
             )
 
         products = f"var PRODUCTS=[{json.dumps(action.sku, ensure_ascii=False)}];"
@@ -372,13 +364,13 @@ class RealExecutor:
         injected = injected.replace(PREFER_LITERAL, prefer, 1)
 
         if PRODUCTS_LITERAL in injected or PREFER_LITERAL in injected:
-            raise RuntimeError("SKU / offerId の差し替えに失敗しました（中止します）")
+            raise RuntimeError("Failed to substitute SKU / offerId literals (aborting)")
         if LIST_ONLY_LITERAL in injected:
-            raise RuntimeError("差し替え後の JS に読み取り専用フラグが入りました（中止します）")
+            raise RuntimeError("Read-only flag appeared after substitution (aborting)")
         if products not in injected or prefer not in injected:
-            raise RuntimeError("差し替え後の JS を検証できませんでした（中止します）")
+            raise RuntimeError("Failed to verify substituted JS payload (aborting)")
         if is_stack and STACK_LITERAL not in injected:
-            raise RuntimeError("差し替えで積み上げ用フラグが失われました（中止します）")
+            raise RuntimeError("STACK flag lost during substitution (aborting)")
         return injected
 
     @staticmethod
@@ -388,8 +380,8 @@ class RealExecutor:
             if "subscriptions.red" in name or name == "Google One":
                 return int(process.pid)
         raise RuntimeError(
-            "Google One (com.google.android.apps.subscriptions.red) のプロセスが"
-            "見つかりません（端末で Google One を開いてください）"
+            "Google One (com.google.android.apps.subscriptions.red) process not found "
+            "(open Google One on the device first)"
         )
 
     def __call__(self, action: core.ComboAction) -> dict:
@@ -398,9 +390,8 @@ class RealExecutor:
             old_token = self._stack_token()
             if not old_token:
                 raise RuntimeError(
-                    "積み上げに必要な購入トークンを library.db から取得できませんでした。"
-                    "Play にログイン中のアカウントが --account と一致しているか、"
-                    "サブスクが有効（自動更新オン）かを確認してください。"
+                    "Could not read purchaseToken from library.db for stacking. "
+                    "Verify the active Play account matches --account and auto-renew is enabled."
                 )
         js = self.build_js(action, old_token=old_token)
         self._ensure_foreground()
@@ -408,7 +399,7 @@ class RealExecutor:
             import frida
         except ImportError as exc:
             raise RuntimeError(
-                "frida が入っていません（./scripts/setup.sh を実行してください）"
+                "frida is not installed (run `./scripts/setup.sh` first)"
             ) from exc
 
         try:
@@ -417,10 +408,10 @@ class RealExecutor:
             session = device.attach(pid)
         except RuntimeError:
             raise
-        except Exception as exc:  # noqa: BLE001 - frida 例外は RuntimeError ではない
+        except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
-                "端末に接続できませんでした"
-                f"（USB デバッグと Google One の起動を確認してください）: {exc}"
+                "Could not connect to device "
+                f"(verify USB debugging and Google One running): {exc}"
             ) from exc
 
         done = threading.Event()
@@ -435,7 +426,7 @@ class RealExecutor:
             event = payload.get("ev")
             if not isinstance(event, str):
                 return
-            # purchaseToken などの機微情報は保持しない。
+            # Strip sensitive fields such as purchaseToken.
             events.append(
                 {
                     "ev": event,
@@ -481,7 +472,7 @@ class RealExecutor:
 
 
 # --------------------------------------------------------------------------
-# プラン組み立て
+# Plan assembly
 # --------------------------------------------------------------------------
 @dataclass
 class PlanBundle:
@@ -497,7 +488,7 @@ class PlanBundle:
 
 
 def _normalize_states(items: Iterable[object]) -> list:
-    """SubscriptionState でも生の所有行（tuple）でも受け付ける。"""
+    """Accept either SubscriptionState objects or raw ownership tuples/dicts."""
     states: list = []
     raw_rows: list = []
     for item in items:
@@ -510,31 +501,27 @@ def _normalize_states(items: Iterable[object]) -> list:
         elif isinstance(item, (tuple, list)) and len(item) >= 3:
             raw_rows.append((item[0], item[1], item[2]))
         else:
-            raise ValueError(f"所有行として解釈できません: {item!r}")
+            raise ValueError(f"Cannot interpret ownership row: {item!r}")
     if raw_rows:
         states.extend(core.parse_ownership_rows(raw_rows))
     return states
 
 
 def _account_warning(states: Sequence[core.SubscriptionState], account: str) -> Optional[str]:
-    """指定アカウントが library.db の所有行と一致するかを確認する（読み取りのみ）。
-
-    既存の ``current_play_account()`` は Play の UI をタップするため、支払い以外で
-    画面操作をしない方針に合わせて使わない。所有行の account 列で確認する。
-    """
+    """Compare --account against library.db ownership rows without tapping Play UI."""
     want = account.strip().lower()
     if not want:
         return None
     accounts = sorted({state.account.strip().lower() for state in states if state.account.strip()})
     if not accounts:
         return (
-            f"警告: 指定アカウント {account} を library.db の所有行から確認できませんでした"
-            "（サブスクの所有行がありません）。"
+            f"Warning: could not verify account {account} in library.db ownership rows "
+            "(no subscription rows found)."
         )
     if want not in accounts:
         return (
-            f"警告: 指定アカウント {account} は library.db の所有行と一致しません"
-            f"（検出: {', '.join(accounts)}）。Play にログイン中のアカウントを確認してください。"
+            f"Warning: account {account} does not match library.db ownership rows "
+            f"(found: {', '.join(accounts)}). Check the active account signed into Play."
         )
     return None
 
@@ -579,9 +566,11 @@ def _collect(
 def _print_plan(bundle: PlanBundle, args: argparse.Namespace) -> None:
     account = getattr(args, "account", None)
     if account:
-        print(f"対象アカウント: {account}")
+        print(f"Target account: {account}")
     elif len(bundle.accounts) > 1:
-        print(f"対象アカウント: 未指定（{len(bundle.accounts)} 件の所有行のうち最も遅い期限で計算）")
+        print(
+            f"Target account: unspecified (computed from latest expiration across {len(bundle.accounts)} ownership rows)"
+        )
     for line in core.format_plan(
         bundle.actions,
         bundle.state_class,
@@ -610,15 +599,15 @@ def _resolve_readers(
 
 
 # --------------------------------------------------------------------------
-# 実行
+# Execution
 # --------------------------------------------------------------------------
 def _wait_seconds_type(value: str) -> float:
     try:
         seconds = float(value)
     except (TypeError, ValueError):
-        raise argparse.ArgumentTypeError(f"秒数を数値で指定してください: {value!r}") from None
+        raise argparse.ArgumentTypeError(f"seconds must be a number: {value!r}") from None
     if seconds < 0:
-        raise argparse.ArgumentTypeError(f"0 以上で指定してください: {value}")
+        raise argparse.ArgumentTypeError(f"seconds must be >= 0: {value}")
     return seconds
 
 
@@ -626,14 +615,14 @@ def _max_steps_type(value: str) -> int:
     try:
         steps = int(value)
     except (TypeError, ValueError):
-        raise argparse.ArgumentTypeError(f"整数で指定してください: {value!r}") from None
+        raise argparse.ArgumentTypeError(f"max steps must be an integer: {value!r}") from None
     if steps < 0:
-        raise argparse.ArgumentTypeError(f"0 以上で指定してください: {value}")
+        raise argparse.ArgumentTypeError(f"max steps must be >= 0: {value}")
     return steps
 
 
 def _print_step(index: int, total: int, action: core.ComboAction) -> None:
-    label = "新規登録" if action.kind == core.KIND_NEW else "積み上げ"
+    label = "New subscription" if action.kind == core.KIND_NEW else "Stack"
     expected = (
         datetime.fromtimestamp(action.expected_end_ms / 1000).strftime("%Y-%m-%d")
         if action.expected_end_ms
@@ -642,13 +631,13 @@ def _print_step(index: int, total: int, action: core.ComboAction) -> None:
     print()
     print(
         f"[{index}/{total}] {label}: {action.sku} / {action.offer_id}"
-        f"（+{action.months}ヶ月 → {expected}）"
+        f" (+{action.months} months -> {expected})"
     )
-    print("  端末の Play の課金画面を確認し、支払いを完了してください")
-    print("  ・金額が 0 円（無料）であることを確認する")
-    print("  ・「定期購入を解約」は押さない（解約すると積み上げできなくなります）")
+    print("  Inspect the Play checkout screen on your device and complete payment manually")
+    print("  - Verify the charge shows 0 (Free)")
+    print("  - Do NOT tap Cancel subscription (canceling prevents stacking)")
     if action.kind == core.KIND_NEW:
-        print("  ・別 SKU のオファーは、今のサブスクの置き換えになることがあります")
+        print("  - Buying an offer under a different SKU may replace an existing active plan")
 
 
 def _wait_for_human(args: argparse.Namespace, index: int, total: int) -> None:
@@ -657,7 +646,7 @@ def _wait_for_human(args: argparse.Namespace, index: int, total: int) -> None:
             time.sleep(args.wait_seconds)
         return
     print(
-        f"  支払いを完了したら Enter を押してください（{index}/{total}）… ",
+        f"  Press Enter after completing payment ({index}/{total})... ",
         end="",
         flush=True,
     )
@@ -665,8 +654,8 @@ def _wait_for_human(args: argparse.Namespace, index: int, total: int) -> None:
         input()
     except EOFError as exc:
         raise RuntimeError(
-            "Enter を待てませんでした（標準入力が閉じています）。"
-            "端末の前で実行するか、--non-interactive --wait-seconds N を使ってください"
+            "Could not wait for Enter (stdin is closed). "
+            "Run interactively at the terminal or pass --non-interactive --wait-seconds N"
         ) from exc
     print()
 
@@ -677,13 +666,7 @@ def _execute_actions(
     state_reader: Callable[[], list],
     executor: Callable[[core.ComboAction], object],
 ) -> int:
-    """プランを 1 ステップずつ実行する。
-
-    すでに使用済みのオファーが候補に残っていることがある（「途中までプランを
-    持っている人」がまさにこの状態）。そこで中断すると、後ろにある未使用の
-    オファーに到達できないため、既定では失敗したステップを飛ばして続行する。
-    `--stop-on-failure` を付けたときだけ、最初の失敗で中断する。
-    """
+    """Execute planned steps sequentially, skipping exhausted offers by default."""
     total = len(bundle.actions)
     before = bundle.latest_end_ms if bundle.latest_end_ms is not None else bundle.now_ms
     succeeded: list = []
@@ -694,16 +677,16 @@ def _execute_actions(
         _print_step(index, total, action)
         result = executor(action)
         if isinstance(result, dict) and result.get("launched") is False:
-            event = result.get("event") or ("タイムアウト" if result.get("timed_out") else "不明")
+            event = result.get("event") or ("timeout" if result.get("timed_out") else "unknown")
             print(
-                f"  課金画面を開けませんでした（{event}）。"
-                "このオファーは使用済みか、このアカウントでは使えない可能性があります。",
+                f"  Could not open Play checkout screen ({event}). "
+                "This offer may already be redeemed or ineligible for this account.",
             )
             skipped.append(action.offer_id)
             if strict:
-                print("  --stop-on-failure が指定されているため中断します。")
+                print("  Stopping because --stop-on-failure is set.")
                 return EXIT_FAILED
-            print("  次のステップへ進みます。")
+            print("  Continuing to next step.")
             continue
 
         _wait_for_human(args, index, total)
@@ -714,33 +697,33 @@ def _execute_actions(
         after = core.latest_end_ms(states)
         if not core.is_meaningful_extension(before, after):
             print(
-                "  有効期限が伸びていません。"
-                "このオファーはすでに使用済みか、適用条件を満たしていない可能性があります。",
+                "  Expiration did not extend. "
+                "This offer may already be redeemed or ineligible.",
             )
             skipped.append(action.offer_id)
             if strict:
-                print("  --stop-on-failure が指定されているため中断します。")
+                print("  Stopping because --stop-on-failure is set.")
                 return EXIT_FAILED
-            print("  次のステップへ進みます。")
+            print("  Continuing to next step.")
             continue
-        print(f"  ✅ 有効期限が {_date(before)} → {_date(after)} に伸びました。")
+        print(f"  OK: expiration extended {_date(before)} -> {_date(after)}.")
         succeeded.append(action.offer_id)
         before = after
 
     print()
     if skipped:
-        print(f"適用できなかったオファー（{len(skipped)} 件）: {', '.join(skipped)}")
-        print("  使用済み、またはこのアカウントでは使えないオファーです。")
+        print(f"Skipped/unapplied offers ({len(skipped)}): {', '.join(skipped)}")
+        print("  These offers were already redeemed or unavailable on this account.")
     if not succeeded:
-        print("有効期限が伸びたステップはありませんでした。")
+        print("No steps extended the subscription expiration.")
         print(
-            "Play の「お支払いと定期購入」で現在の状態を確認してください。"
-            "積み上げ先がすべて使用済みなら、これ以上延ばせない可能性があります。"
+            "Check Payments & subscriptions in Google Play. "
+            "If all stack offers are exhausted, further extension is not available."
         )
         return EXIT_FAILED
 
-    print(f"{len(succeeded)} 件のステップで有効期限が伸びました。")
-    print("最後に Play の「お支払いと定期購入」で期限と金額を確認してください。")
+    print(f"Extended expiration across {len(succeeded)} step(s).")
+    print("Verify the final renewal date and price in Google Play -> Payments & subscriptions.")
     return EXIT_OK
 
 
@@ -756,28 +739,27 @@ def _date(ms_value: Optional[int]) -> str:
 def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--device", action="store_true",
-        help="端末から状態と offer を読む（指定しない場合、端末には一切触れません）",
+        help="Read state and offers from connected device (touches no device when omitted)",
     )
     parser.add_argument(
         "--account", metavar="EMAIL",
-        help="想定アカウント。library.db の所有行と違えば警告する",
+        help="Expected Google account; warns if library.db ownership rows differ",
     )
     parser.add_argument(
         "--timeout", type=float, default=20.0, metavar="SECONDS",
-        help="offer 読み取りと課金画面の待ち時間（既定: 20）",
+        help="Timeout for offer scan and checkout launch (default: 20)",
     )
     parser.add_argument(
         "--open-app", action="store_true",
-        help="Google One が前面に無いとき、端末側で Google One を前面に出す"
-             "（既定は出さない＝ご自身で開いてください）",
+        help="Launch Google One to foreground if needed (disabled by default)",
     )
     parser.add_argument(
         "--max-steps", type=_max_steps_type, default=4, metavar="N",
-        help="プランの最大ステップ数（既定: 4）",
+        help="Maximum steps to include in plan (default: 4)",
     )
     parser.add_argument(
         "--auto-renew", action=argparse.BooleanOptionalAction, default=True,
-        help="サブスクの自動更新がオンかどうか（積み上げ可否の判定に使う・既定: オン）",
+        help="Whether subscription auto-renew is active (default: True)",
     )
 
 
@@ -785,36 +767,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="combo.py",
         description=(
-            "Google AI Pro の無料オファーを、アカウント状態に応じて計画・実行する"
-            "（既定はドライラン・支払いは人が行う）"
+            "Plan and execute Google AI Pro free-offer stacking by account state "
+            "(dry-run by default; payment is always confirmed manually)"
         ),
     )
     commands = parser.add_subparsers(dest="command")
 
-    plan = commands.add_parser("plan", help="状態と offer を読んでプランを表示する（実行しない）")
+    plan = commands.add_parser("plan", help="Read state and offers and print plan (no execution)")
     _add_common_flags(plan)
 
-    run = commands.add_parser("run", help="プランを実行する（--execute --yes が必要）")
+    run = commands.add_parser("run", help="Execute combo plan (requires --execute --yes)")
     _add_common_flags(run)
-    run.add_argument("--execute", action="store_true", help="実行を許可する（--yes と同時に必要）")
-    run.add_argument("--yes", action="store_true", help="確認を省略して実行する")
+    run.add_argument("--execute", action="store_true", help="Enable execution (requires --yes)")
+    run.add_argument("--yes", action="store_true", help="Confirm execution")
     run.add_argument(
         "--non-interactive", action="store_true",
-        help="Enter 待ちをせず、--wait-seconds だけ待つ（自動化・検証用）",
+        help="Wait --wait-seconds instead of prompting for Enter (for automation/tests)",
     )
     run.add_argument(
         "--wait-seconds", type=_wait_seconds_type, default=30.0, metavar="SECONDS",
-        help="--non-interactive のときに待つ秒数（既定: 30）",
+        help="Seconds to wait under --non-interactive (default: 30)",
     )
     run.add_argument(
         "--stop-on-failure", action="store_true",
-        help="1 ステップでも期限が伸びなければ中断する（既定は飛ばして続行）",
+        help="Abort on first step that fails to extend expiration (default skips and continues)",
     )
     return parser
 
 
 def _normalize_argv(argv: Optional[Sequence[str]]) -> list:
-    """サブコマンド省略時は plan。フラグだけ渡された場合も plan として扱う。"""
+    """Default to `plan` when subcommand is omitted or only flags are passed."""
     values = list(sys.argv[1:] if argv is None else argv)
     if not values:
         return ["plan"]
@@ -864,23 +846,22 @@ def _run(
     print()
     if len(bundle.accounts) > 1 and not getattr(args, "account", None):
         print(
-            "複数アカウントの所有行が見つかりました。"
-            "どのアカウントを対象にするか --account <email> で指定してください。",
+            "Multiple accounts found in ownership rows. "
+            "Specify which account to target with --account <email>.",
             file=sys.stderr,
         )
         for name in bundle.accounts:
             print(f"  - {name}", file=sys.stderr)
         print(
-            "（アカウントが混ざると、別アカウントの期限を比較して"
-            "「伸びた」と誤判定します）",
+            "(Mixing accounts would compare the wrong expiration timestamp.)",
             file=sys.stderr,
         )
         return EXIT_FAILED
     if not bundle.possible:
-        print(f"この状態では実行しません: {bundle.verdict}", file=sys.stderr)
+        print(f"Cannot execute in this state: {bundle.verdict}", file=sys.stderr)
         return EXIT_FAILED
     if not bundle.actions:
-        print("実行できる無料オファーが無いため中止します。", file=sys.stderr)
+        print("Aborting: no runnable free offers available.", file=sys.stderr)
         return EXIT_FAILED
 
     runner = (
@@ -907,8 +888,8 @@ def main(
         if args.command == "run":
             return _run(args, state_reader, offer_reader, executor)
         return _plan(args, state_reader, offer_reader)
-    except Exception as exc:  # noqa: BLE001 - adb/frida の例外も日本語 1 行にまとめる
-        print(f"エラー: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
 

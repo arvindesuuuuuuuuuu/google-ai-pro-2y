@@ -1,60 +1,51 @@
-# セキュリティ（SECURITY）
+# Security Policy (SECURITY)
 
-本リポジトリが何を機密として扱い、どこまで守り、どこから先は利用者の運用に任せているかをまとめます。
+This document summarizes what this repository treats as sensitive data, the safeguards enforced by the code, and operational practices left to the user.
 
-## 1. 取り扱う機密情報
+## 1. Sensitive Data Handled
 
-| 情報 | どこにあるか | 本リポジトリでの扱い |
+| Data | Where It Lives | How This Repository Handles It |
 |---|---|---|
-| `purchaseToken` | Play の `library.db`（`ownership` テーブル） | 積み上げのときだけ読み、ログにもレポートにも出さない |
-| `offerToken` | 端末内の課金フロー | 端末内で完結させ、ホスト側に保存しない |
-| Play アカウント（メールアドレス） | `library.db` の `account` 列 | `--account` の照合にだけ使い、レポートには出さない |
-| `library.db` | `/data/data/com.android.vending/databases/library.db` | 端末からコピーして読み、処理後に端末側とホスト側の両方を削除する |
+| `purchaseToken` | Play `library.db` (`ownership` table) | Read only during stacking; never written to logs or reports |
+| `offerToken` | In-device billing flow | Kept strictly on-device; never saved on the host |
+| Play account (email) | `account` column in `library.db` | Used solely for `--account` matching; excluded from reports |
+| `library.db` | `/data/data/com.android.vending/databases/library.db` | Copied temporarily to read, then deleted from both device and host |
 
-## 2. トークンを表示・保存しない設計
+## 2. Design That Avoids Displaying or Saving Tokens
 
-- スキャナ（`scripts/sku_scanner*.py`）は、端末から受け取ったイベントを
-  許可リストの 5 項目（`sku` / `offer_id` / `period` / `micros` / `title`）に絞ってから出力します。
-  それ以外の鍵はレポートに保存されず、`summarize` 側でも同じ許可リストで検証します。
-- コンボ（`scripts/combo*.py`）は、購入トークンをログに出しません。
-  積み上げに使う `purchaseToken` は `library.db` から読んで Frida エージェントに渡すだけで、
-  標準出力にもファイルにも書きません。端末側のコピーとホスト側の一時ファイルは `finally` で削除します。
-- どちらの経路も、端末との通信は `adb` と Frida だけです。外部サーバーへの送信は行いません。
+- The scanner (`scripts/sku_scanner*.py`) filters incoming events down to a strict 5-field allowlist (`sku` / `offer_id` / `period` / `micros` / `title`) before writing output.
+  All other keys are dropped from reports, and `summarize` validates against the same allowlist.
+- The combo runner (`scripts/combo*.py`) never logs purchase tokens.
+  Any `purchaseToken` needed for stacking is read from `library.db` and passed directly to the Frida agent without writing it to stdout or disk. Both the temporary device copy and host temp file are removed in a `finally` block.
+- Both workflows communicate with the device exclusively over `adb` and Frida. Nothing is sent to external servers.
 
-## 3. 生成物はコミットされない
+## 3. Generated Artifacts Are Not Committed
 
-次のディレクトリは `.gitignore` に登録済みで、リポジトリには入りません。
+The following paths are listed in `.gitignore` and excluded from Git:
 
-- `ultra0-report/` には、スキャナのレポート（既定の保存先）と `ultra0-17.py` の実行ログが入ります。
-- `.yomiyasu/` と `*.final.md` には、文書の推敲ツールが作る作業ファイルと最終稿が入ります。
+- `ultra0-report/` stores scanner reports (default output directory) and `ultra0-17.py` execution logs.
+- `.yomiyasu/` and `*.final.md` store working files and final drafts from proofreading tools.
 
-レポートを別の場所に保存した場合は gitignore の対象外になるため、
-`git status` で混入していないか確認してから共有してください。
+If you save a report to a custom path outside `.gitignore`, check `git status` before sharing to ensure nothing sensitive is included.
 
-## 4. 実行前に確認すること
+## 4. Pre-Execution Checklist
 
-- root 端末を信頼できるネットワークで使う。公共 Wi-Fi や共有の PC では実行しない。
-- `adb` の接続先を確認する。`adb devices` に出る端末が自分のものか、
-  複数つないでいないかを毎回確かめる。
-- 端末を他人と共有しない。root 化した端末には、Play のアカウントと購入情報が入っている。
-- 実行前に Play の「お支払いと定期購入」を開き、ログイン中のアカウントが意図したものか目視で確認する。
-- 端末を貸す・売る前には、Play のアカウントを削除し、root 化を戻す。
+- Use your rooted device only on a trusted network. Do not run on public Wi-Fi or shared machines.
+- Verify the `adb` target before running commands. Run `adb devices` to confirm only your intended device is connected.
+- Do not share a rooted device containing your Play account and purchase history.
+- Before running, open Google Play > "Payments & subscriptions" and visually confirm the active signed-in account.
+- Before lending or selling a device, remove your Play account and unroot the device.
 
-## 5. 脆弱性の報告
+## 5. Reporting Vulnerabilities
 
-脆弱性や、トークン・アカウント情報が漏れうる挙動を見つけた場合は、
-GitHub の Issues で報告してください。
+If you find a vulnerability or a code path that could leak tokens or account data, please report it via GitHub Issues.
 
-- 機密情報は書かない。実際のメールアドレス、購入トークン、端末のシリアル番号、
-  アカウント名は載せず、`you@example.com` のようなプレースホルダに置き換える。
-- 再現手順は、値を伏せたまま「どのコマンドで」「どのような出力になったか」が分かる形で書く。
-- 悪用できる詳細は、修正が入るまで公開しないでください。
+- Do not include real secrets. Replace real email addresses, purchase tokens, device serial numbers, and account names with placeholders such as `you@example.com`.
+- Provide reproduction steps with values redacted, showing the exact command run and the observed output format.
+- Do not publish exploitable details until a fix is available.
 
-## 6. 既知の注意
+## 6. Known Operational Notes
 
-- 生成したレポートをそのまま公開しない。スキャナのレポートは許可リスト方式ですが、
-  保存先やファイル名にアカウント名を含めないでください。
-- スクリーンショットを共有するときはマスキングする。Play の画面には
-  アカウント名、メールアドレス、購入日、端末の状態バーなどが写り込みます。
-  トリミングと塗りつぶしを行ってから共有してください。
-- 端末の画面録画・ログにも同じ情報が残ります。共有前に中身を確認してください。
+- Do not publish generated reports verbatim without checking filenames. While scanner reports use an allowlist, avoid putting account names in output paths or filenames.
+- Mask screenshots before sharing. Play screens display account names, email addresses, purchase dates, and device status bars. Crop and redact sensitive areas before posting.
+- Screen recordings and device logs capture the same details; inspect them before sharing.

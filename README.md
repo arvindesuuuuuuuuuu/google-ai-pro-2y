@@ -1,237 +1,222 @@
 # google-ai-pro-2y
 
-Google AI Pro (5TB) の **無料トライアル offer を Play 課金経由で取得**し、
-6ヶ月オファーを重ねて **最長 2 年（+予備で 30 ヶ月）** まで延ばすためのスクリプト一式です。
+A toolkit for retrieving **Google AI Pro (5TB) free trial offers via Google Play Billing** and stacking 6-month offers to extend validity up to **2 years (or 30 months with the backup offer)**.
 
-Play の `BillingClient` は「無料トライアル offer」を **アプリ内課金経由でしか返さない** ため、
-Google One のプロセスに Frida で課金モジュールを差し込み、offer を列挙 → 0 円のときだけ
-チェックアウト画面を開いて登録します。
+Because Google Play's `BillingClient` only returns free trial offers **through in-app billing**, the scripts inject Frida into the Google One process, load Play's billing module, enumerate offers, and open the checkout sheet only when an offer is priced at 0.
 
-- 元スクリプト（`scripts/ultra0.py`）は **Android 12/13 のエミュレータ + frida 16.5.9 + Windows** 前提
-- このリポジトリは **Android 14/15/16 の実機（root）+ frida 17** でも動くようにした `scripts/ultra0-17.py` と
-  その Frida エージェント（`agent/`）を追加したものです
+- The original script (`scripts/ultra0.py`) targets **Android 12/13 emulators + frida 16.5.9 + Windows**.
+- This repository adds `scripts/ultra0-17.py` and its bundled Frida agent (`agent/`) so the workflow also runs on **rooted Android 14/15/16 physical devices + frida 17**.
 
-## これは何か
+## What This Is
 
-Google AI Pro (5TB) の無料トライアルを、Android 実機の Play 課金経由で調べて積み上げる、
-日本語のツールキットです。中身は 3 層に分かれています。
+A toolkit for inspecting and stacking Google AI Pro (5TB) free trials through Play Billing on rooted Android devices, structured in three layers:
 
-1. 読み取り専用のスキャナ（`scripts/sku_scanner*.py` / `./scripts/run.sh scan ...`）。
-   端末にどんな SKU / offer があるかを読むだけで、登録も課金もしません。
-2. コンボ計画・実行（`scripts/combo*.py` / `./scripts/run.sh combo plan|run`）。
-   アカウントの状態を判定して積み上げ計画を立てます。既定はドライランで、実行には
-   `--execute --yes` が必要です。「登録」の自動タップはせず、支払いは人が行います。
-3. 元の固定手順（`scripts/ultra0-17.py` + `./scripts/run.sh step1`〜`step4`）。
-   すでに有効なサブスクがある前提で、12ヶ月 → +6ヶ月 → +6ヶ月 → 予備、と順に重ねます。
+1. Read-only SKU scanner (`scripts/sku_scanner*.py` / `./scripts/run.sh scan ...`).
+   Queries available SKUs and offers on the device without subscribing or triggering charges.
+2. Combo planner and runner (`scripts/combo*.py` / `./scripts/run.sh combo plan|run`).
+   Inspects current account state and builds a stacking plan. Defaults to dry-run; executing requires `--execute --yes`. Never auto-taps "Subscribe" -- payment confirmation stays manual.
+3. Legacy fixed step flow (`scripts/ultra0-17.py` + `./scripts/run.sh step1` through `step4`).
+   Assumes an active subscription and stacks sequentially: 12 months -> +6 months -> +6 months -> backup.
 
-## 免責・注意とセキュリティ
+## Disclaimer & Security
 
-- 本リポジトリは非公式です。実際の課金が発生しうること、`micros=0` が何を意味するか、
-  リスクの範囲は [免責・注意（DISCLAIMER.md）](DISCLAIMER.md) にまとめています。実行前に必ず目を通してください。
-- 購入トークン・アカウント情報の扱い、実行前の確認事項、脆弱性の報告方法は
-  [セキュリティ（SECURITY.md）](SECURITY.md) にまとめています。
-- 権利関係は [権利と由来（NOTICE.md）](NOTICE.md) を参照してください。由来するコードには
-  ライセンスを付与できず、このリポジトリで新たに書いた部分は CC0 1.0 としています。
+- This repository is unofficial. See [DISCLAIMER.md](DISCLAIMER.md) before running anything to understand potential real charges, what `micros=0` means, and risk boundaries.
+- See [SECURITY.md](SECURITY.md) for how purchase tokens and account info are handled, pre-run checks, and vulnerability reporting.
+- See [NOTICE.md](NOTICE.md) for licensing and provenance. Upstream code carries no license grant; newly authored code in this repository is dedicated under CC0 1.0.
 
-## 実測結果（2026-11-19 / Pixel 7a / Android 16 / KernelSU）
+## Measured Results (2026-11-19 / Pixel 7a / Android 16 / KernelSU)
 
-| 手順 | 適用した offer | 有効期限 |
+| Step | Applied Offer | Expiration Date |
 |---|---|---|
-| 開始時 | 学生プラン `g1.play.2tb.ai.student`（￥720/月） | 2026-12-18 |
-| step1 | `12months-eft`（12ヶ月無料） | 2027-11-19 |
-| step2 | `6months-eft`（+6ヶ月） | 2028-05-19（546日） |
-| step3 | `6months-eft-2`（+6ヶ月） | **2028-11-19（730日 = 2年）** |
-| step4 | `6months-eft-ss-2026`（予備 +6ヶ月） | Play 側が即エラー（このアカウントでは不可） |
+| Initial | Student plan `g1.play.2tb.ai.student` (¥720/mo) | 2026-12-18 |
+| step1 | `12months-eft` (12 months free) | 2027-11-19 |
+| step2 | `6months-eft` (+6 months) | 2028-05-19 (546 days) |
+| step3 | `6months-eft-2` (+6 months) | **2028-11-19 (730 days = 2 years)** |
+| step4 | `6months-eft-ss-2026` (backup +6 months) | Immediate Play error (ineligible on this account) |
 
-Play のサブスク画面で `有効 / Google AI Pro (5 TB) / 次回のお支払い: ￥2,900（2028/11/19）` を確認済み。
+Confirmed on Google Play's Subscriptions screen: `Active / Google AI Pro (5 TB) / Next payment: ¥2,900 (2028/11/19)`.
 
-## 実績スクリーンショット（本人ポスト）
+## Proof Screenshots (Author's Posts)
 
-同じ手順で 24 ヶ月まで積めたときの記録です（投稿者本人のポスト。アカウント名・メールは伏せています）。
+Captured from the same run reaching 24 months (posted by the author with account name and email redacted):
 
 - <https://x.com/lvz3s/status/2123112734460170354>
 - <https://x.com/lvz3s/status/2123109098443121001>
 
-![Play の定期購入画面（次回のお支払い）](docs/images/result-subscription.jpg)
+![Google Play Subscriptions Screen (Next Payment)](docs/images/result-subscription.jpg)
 
-![結果サマリ](docs/images/result-summary.jpg)
+![Result Summary](docs/images/result-summary.jpg)
 
-![作業ログ](docs/images/result-session-log.jpg)
+![Session Log](docs/images/result-session-log.jpg)
 
-## 2 つの実行経路
+## Two Execution Paths
 
-| | 経路 A（legacy / frida 16） | 経路 B（このリポジトリの追加分 / frida 17） |
+| | Path A (Legacy / frida 16) | Path B (Added in This Repo / frida 17) |
 |---|---|---|
-| 端末 | Android 12/13 エミュレータ（MuMu 等） | Android 14/15/16 の実機（root） |
-| ホスト | Windows（.bat ダブルクリック） | Linux / macOS / Windows |
-| frida | 16.5.9（Java bridge 同梱） | 17.22.2（Java bridge を同梱ビルド） |
-| スクリプト | `scripts/ultra0.py` | `scripts/ultra0-17.py` |
-| ランチャ | `windows/frida16/*.bat` | `./scripts/run.sh` または `windows/frida17/*.bat` |
+| Device | Android 12/13 emulator (MuMu, etc.) | Rooted Android 14/15/16 physical device |
+| Host | Windows (double-click `.bat`) | Linux / macOS / Windows |
+| frida | 16.5.9 (built-in Java bridge) | 17.22.2 (Java bridge bundled into agent) |
+| Script | `scripts/ultra0.py` | `scripts/ultra0-17.py` |
+| Launcher | `windows/frida16/*.bat` | `./scripts/run.sh` or `windows/frida17/*.bat` |
 
-Android 14 以降は **書き込み可能な dex を拒否**する、**frida 16 が spawn で固まる**、
-**frida 17 は Java bridge を同梱しない** などの差があるため、経路 B では後述の工夫を入れています
-（詳細: [docs/ANDROID16-NOTES.md](docs/ANDROID16-NOTES.md)）。
+Android 14+ **blocks writable dex files**, **frida 16 hangs on `spawn()`**, and **frida 17 omits the Java bridge by default**. Path B addresses all of these (details: [docs/ANDROID16-NOTES.md](docs/ANDROID16-NOTES.md)).
 
-## クイックスタート（Linux / macOS + Android 14+ 実機）
+## Quick Start (Linux / macOS + Android 14+ Device)
 
-前提: Python 3.9+、node/npm（任意・ビルドしないなら同梱バンドルを使用）、adb、
-root 済み端末で USB デバッグ許可済み、Play にログイン＋支払い方法登録済み。
+Prerequisites: Python 3.9+, node/npm (optional if using the prebuilt bundle), adb, a rooted device with USB debugging enabled, signed into Google Play with a payment method on file.
 
 ```bash
-./scripts/setup.sh               # venv + frida 17.22.2 + agent ビルド + adb
-./scripts/run.sh check           # 端末 / root / frida / 課金モジュールの自検
-./scripts/run.sh list            # offer 一覧（課金しない・ゼロリスク）
+./scripts/setup.sh               # venv + frida 17.22.2 + agent build + adb
+./scripts/run.sh check           # Self-check device / root / frida / billing module
+./scripts/run.sh list            # List offers (no billing, zero risk)
 
-# 1) SKU / offer を読むだけ（登録・課金しない）
-./scripts/run.sh scan generate                 # 照会対象の SKU 候補を生成する（端末不要）
-./scripts/run.sh scan query --candidates       # 実機から offer を読み取る
+# 1) Read-only SKU / offer inspection (no subscription or charges)
+./scripts/run.sh scan generate                 # Generate candidate SKUs offline
+./scripts/run.sh scan query --candidates       # Query offers from the device
 ./scripts/run.sh scan summarize --input ultra0-report/sku-scan-YYYYMMDD-HHMMSS.json
 
-# 2) 状態に応じたコンボ計画（既定はドライラン）
-./scripts/run.sh combo plan --device           # 計画だけ表示（実行しない）
+# 2) State-aware combo planner (dry-run by default)
+./scripts/run.sh combo plan --device           # Show plan only (no execution)
 ./scripts/run.sh combo run --device --account you@example.com --execute --yes
-                                               # 1 ステップずつ実行（支払いは人が行う）
+                                               # Run step-by-step (user completes payment)
 
-# 3) テスト（端末も frida も不要）
+# 3) Unit tests (no device or frida required)
 ./scripts/run.sh test
 ```
 
-SKU / offer を**読むだけ**で調べたい場合は `scan` を使ってください（登録・課金は行いません）。
-`scan` の各サブコマンドと `--candidates` / `--skus` / `--timeout` の説明は
-[docs/SKU-SCANNER.md](docs/SKU-SCANNER.md) にあります。
-`combo` の判定ロジックと注意点は [docs/COMBO.md](docs/COMBO.md) にあります。
+Use `scan` if you only want to **read** available SKUs and offers without purchasing.
+See [docs/SKU-SCANNER.md](docs/SKU-SCANNER.md) for `scan` subcommands and flags (`--candidates`, `--skus`, `--timeout`).
+See [docs/COMBO.md](docs/COMBO.md) for `combo` decision logic and caveats.
 
-`list` で以下が出れば前提 OK です（数値は例）。
+If `list` outputs lines like the following, prerequisites are satisfied (numbers are examples):
 
 ```
-offer 12months-eft → 0 (P1Y)
-offer 6months-eft → 0 (P6M)
-offer 6months-eft-2 → 0 (P6M)
-offer 6months-eft-ss-2026 → 0 (P6M)
-offer null → 2900000000 (P1M)     # 通常価格（￥2,900/月）
+offer 12months-eft -> 0 (P1Y)
+offer 6months-eft -> 0 (P6M)
+offer 6months-eft-2 -> 0 (P6M)
+offer 6months-eft-ss-2026 -> 0 (P6M)
+offer null -> 2900000000 (P1M)     # Standard price (¥2,900/mo)
 ```
 
-そのまま順番に実行します。
+Then execute the steps in order:
 
 ```bash
-./scripts/run.sh step1      # 12ヶ月無料トライアル
-./scripts/run.sh step2      # +6ヶ月（subscription upgrade で重ねる）
-./scripts/run.sh step3      # +6ヶ月
-./scripts/run.sh step4      # 予備 +6ヶ月（エラーになる場合あり）
+./scripts/run.sh step1      # 12-month free trial
+./scripts/run.sh step2      # +6 months (stacked via subscription upgrade)
+./scripts/run.sh step3      # +6 months
+./scripts/run.sh step4      # Backup +6 months (may return an error)
 ```
 
-各ステップ後に Play の「定期購入」画面で **次回のお支払い日が後ろにずれている**ことを確認してください。
+After each step, verify in Google Play's Subscriptions screen that the **Next payment** date has moved forward before continuing.
 
-### コンボ計画（アカウント状態に応じた判定）
+### Combo Planner (Account-State-Aware Ordering)
 
-`step1`〜`step4` は「すでに有効なサブスクがある」前提の固定手順です。
-新規アカウントや期限切れの場合は順番が変わるため、状態を読んでから計画する
-`combo` を使ってください。
+`step1` through `step4` assume an already-active subscription.
+For fresh or expired accounts, the optimal starting offer differs; use `combo` to inspect state first:
 
 ```bash
-./scripts/run.sh combo plan --device                     # 計画だけ表示（実行しない）
-./scripts/run.sh combo run --device --execute --yes      # 1 ステップずつ実行
+./scripts/run.sh combo plan --device                     # Show plan only (no execution)
+./scripts/run.sh combo run --device --execute --yes      # Execute step by step
 ```
 
-- `fresh`（サブスクなし）: 最長の単体無料オファー `18months_eft`（+18ヶ月）から開始
-- `active`（有効）: 積み上げ可否を判定し、可能なら `subs_variant` の無料オファーだけを積む
-- `expired`（期限切れ）: 新規登録として `18months_eft` から開始
+- `fresh` (no subscription): Starts with the longest standalone free offer `18months_eft` (+18 months)
+- `active` (valid subscription): Checks stacking eligibility and stacks only `subs_variant` free offers
+- `expired` (expired subscription): Treats as a new subscription starting from `18months_eft`
 
-支払いの確定は必ず人が行います。スクリプトは課金画面を開いて待つだけで、
-「登録」の自動タップや `confirm_zero()` の呼び出しはしません。
-実行は `--execute` と `--yes` の両方が必要で、`--device` を付けない限り端末に触れません。
-詳細と注意点は [docs/COMBO.md](docs/COMBO.md) を参照してください。
+Payment confirmation is always performed by a human. The script only opens the billing sheet and waits; it never auto-taps "Subscribe" or calls `confirm_zero()`.
+Execution requires both `--execute` and `--yes`, and the device is never touched unless `--device` is passed.
+See [docs/COMBO.md](docs/COMBO.md) for full details and risks.
 
-### Windows / MuMu（経路 A）
+### Windows / MuMu (Path A)
 
 ```bat
 pip install frida==16.5.9
 python scripts\setup_env_frida16.py
-windows\frida16\0_環境自検.bat
-windows\frida16\1_offer一覧.bat
-windows\frida16\2_Pro_12个月_第1步.bat
+windows\frida16\0_check_env.bat
+windows\frida16\1_list_offers.bat
+windows\frida16\2_Pro_12m_step1.bat
 ...
 ```
 
-### Windows / 実機 Android 14+（経路 B）
+### Windows / Physical Android 14+ (Path B)
 
 ```bat
-:: 1. setup
+:: 1. Setup
 .venv\Scripts\python.exe -m pip install frida==17.22.2
 cd agent && npm install && cd ..
 .venv\Scripts\python.exe scripts\apply_bridge_patch.py
 .venv\Scripts\python.exe scripts\build_agent.py
-:: 2. 実行
-windows\frida17\0_環境自検.bat
+:: 2. Run
+windows\frida17\0_check_env.bat
 ```
 
-## リポジトリ構成
+## Repository Structure
 
 ```
 scripts/
-  setup.sh              Linux/macOS の環境構築
-  run.sh                check / list / scan / test / step1-4 のランチャ
-  sku_scanner.py        SKU スキャナ CLI（読み取り専用）
-  sku_scanner_core.py   SKU 候補生成・offer 整形の純粋ロジック
-  combo.py              コンボ計画 CLI（既定ドライラン・支払いは人が行う）
-  combo_core.py         状態判定・積み上げプランの純粋ロジック
-  build_agent.py        agent/iife バンドルのビルド
-  apply_bridge_patch.py frida-java-bridge への Android 16 パッチ
-  fix_frida.sh          frida-server のバージョン不一致を解消
-  ultra0.py             元スクリプト（無改変）
-  ultra0-17.py          Android 14+ / frida 17 対応版
-  setup_env_frida16.py  元 zip の環境セットアップ（frida 16.5.9）
-  query_sku.py          元 zip の SKU 確認ツール
+  setup.sh              Linux/macOS environment setup
+  run.sh                Launcher for check / list / scan / test / step1-4
+  sku_scanner.py        Read-only SKU scanner CLI
+  sku_scanner_core.py   Pure logic for SKU candidate generation and offer formatting
+  combo.py              Combo planner CLI (dry-run by default; human payment)
+  combo_core.py         Pure logic for state detection and stacking plans
+  build_agent.py        Builds agent.iife.js bundle
+  apply_bridge_patch.py Android 16 patch for frida-java-bridge
+  fix_frida.sh          Fixes frida-server version mismatches
+  ultra0.py             Original script (unmodified)
+  ultra0-17.py          Android 14+ / frida 17 port
+  setup_env_frida16.py  Original zip setup helper (frida 16.5.9)
+  query_sku.py          Original zip SKU query helper
 agent/
-  injected.js           元 FRIDA_JS に registerClass パッチを入れたもの
-  agent.js              自動生成（bridge import + injected.js）
-  agent.iife.js         ビルド済みバンドル（同梱）
-  package.json          frida-java-bridge 7.1.0
+  injected.js           Original FRIDA_JS with registerClass patch applied
+  agent.js              Generated entrypoint (bridge import + injected.js)
+  agent.iife.js         Prebuilt bundle (committed)
+  package.json          Pins frida-java-bridge 7.1.0
 windows/
-  frida16/              経路 A の .bat
-  frida17/              経路 B の .bat
+  frida16/              Path A .bat launchers
+  frida17/              Path B .bat launchers
 docs/
-  SETUP.md              詳細セットアップ
-  README.md             docs のインデックス（読む順番）
-  SKU-SCANNER.md        SKU スキャナの使い方（読み取り専用）
-  COMBO.md              コンボ計画の使い方と注意点
-  ANDROID16-NOTES.md    なぜ改造が必要だったか（技術メモ）
-  TROUBLESHOOTING.md    エラー別の対処
-  RESULTS.md            実測ログ
+  SETUP.md              Detailed setup guide
+  README.md             Documentation index (reading order)
+  SKU-SCANNER.md        Read-only SKU scanner guide
+  COMBO.md              Combo planner usage and caveats
+  ANDROID16-NOTES.md    Technical notes on Android 16 / frida 17 fixes
+  TROUBLESHOOTING.md    Error reference and fixes
+  RESULTS.md            Measured run logs
 tests/
-  test_sku_*.py         スキャナの単体テスト（端末・frida 不要）
-  test_combo_*.py       コンボ計画・実行の単体テスト（端末・frida 不要）
+  test_sku_*.py         Scanner unit tests (no device or frida required)
+  test_combo_*.py       Combo planner/runner unit tests (no device or frida required)
 ```
 
-## テスト
+## Tests
 
 ```bash
 ./scripts/run.sh test        # python3 -m unittest discover -s tests -v
 ```
 
-- Python 標準の `unittest` だけで動きます。追加の依存はありません。
-- 端末も frida も不要です。adb が無い PC でもそのまま実行できます。
-- 現在 118 個のテストがあり、すべて通ると `OK` と表示されます。
-- `tests/` はスキャナ（`test_sku_*.py`）とコンボ（`test_combo_*.py`）に分かれています。
+- Runs purely with Python's standard `unittest` module -- no extra dependencies.
+- Requires neither a device nor frida; runs even on hosts without `adb`.
+- Contains 118 unit tests; prints `OK` when all pass.
+- `tests/` is organized into scanner tests (`test_sku_*.py`) and combo tests (`test_combo_*.py`).
 
-## 主なつまずきどころ（詳細は docs/TROUBLESHOOTING.md）
+## Common Pitfalls (See docs/TROUBLESHOOTING.md)
 
-| 症状 | 原因 | 対処 |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `unable to communicate with remote frida-server` | client/server のメジャー不一致 | `./scripts/run.sh fix-frida` |
-| `malformed package` | エージェントを `esm` 形式でビルドした | `bundle_format="iife"` で再ビルド |
-| `'Java' is not defined` | frida 17 は Java bridge 非同梱 | `agent/` のバンドルを使う |
-| 注入後に何も起きない（無反応） | Android 16 で `Java.registerClass` がハング | `injected.js` の `skipInterfaceExpansion:true` |
-| `Writable dex file ... is not allowed` | Android 14+ の dex 制約 | `module_521.apk` を `chmod 444` |
-| `app_not_started` | アプリ起動待ち 7 秒固定 | `ultra0-17.py` は 20 秒ポーリング |
-| チェックアウトの文言が取れない | 端末が日本語ロケール | ja/en/zh + `¥` 対応済み（`ultra0-17.py`） |
+| `unable to communicate with remote frida-server` | Client/server major version mismatch | `./scripts/run.sh fix-frida` |
+| `malformed package` | Agent built in `esm` format | Rebuild with `bundle_format="iife"` |
+| `'Java' is not defined` | frida 17 excludes Java bridge | Use bundled `agent/agent.iife.js` |
+| No response after injection | `Java.registerClass` hangs on Android 16 | `skipInterfaceExpansion:true` in `injected.js` |
+| `Writable dex file ... is not allowed` | Android 14+ dex permission enforcement | `chmod 444` on `module_521.apk` |
+| `app_not_started` | Fixed 7-second app startup wait | `ultra0-17.py` polls for 20 seconds |
+| Checkout text not captured | Device set to Japanese locale | Added ja/en/zh + `¥` matching (`ultra0-17.py`) |
 
-## 注意
+## Notes
 
-- **トライアル終了日から自動課金**されます（今回なら 2028-11-19 から ￥2,900/月）。
-  忘れないよう Play のサブスク画面で解約してください（解約後も期限までは利用可）。
-- 重ね掛けは「サブスクが有効（自動更新オン）」なことが条件です。先に解約すると重ねられません。
-- Play は同じ操作を連続すると一時的にエラーを返すことがあります。時間を置いて再試行してください。
-- KernelSU + LSPosed + Android 16 の実機では、Frida を長時間動かすとまれにブートループに入ることがありました。
-  その場合は電源長押しで再起動してください（サブスク状態はサーバー側に残ります）。
-- 自己責任でご利用ください。
+- **Automatic billing begins on the trial expiration date** (in this test run, ¥2,900/mo starting 2028-11-19).
+  Cancel in Play's Subscriptions screen beforehand to avoid unwanted charges (access remains until expiration).
+- Stacking requires an **active subscription (auto-renew ON)**. Canceling early prevents stacking.
+- Repeating the same Play action too quickly can trigger temporary errors; wait briefly and retry.
+- On physical KernelSU + LSPosed + Android 16 devices, keeping Frida active for extended periods rarely caused boot loops.
+  If this happens, hold the power button to force-reboot (subscription state is stored server-side).
+- Use strictly at your own risk.

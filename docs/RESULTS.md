@@ -1,127 +1,113 @@
-# 実測ログ（2026-11-19）
+# Measured Run Log (2026-11-19)
 
-> アカウント名・端末識別子などは伏せています（`example@gmail.com` は例示）。
+> Account names and device identifiers are redacted (`example@gmail.com` is an example placeholder).
 
-環境:
+Environment:
 
 | | |
 |---|---|
-| ホスト | Arch Linux / x86_64 |
-| 端末 | Pixel 7a (`lynx`) / Android 16 / KernelSU |
+| Host | Arch Linux / x86_64 |
+| Device | Pixel 7a (`lynx`) / Android 16 / KernelSU |
 | Frida | client 17.22.2 / server 17.22.2 |
-| 課金経路 | Google One アプリ + `module_521.apk`（BillingClient 5.x 系） |
-| アカウント | `example@gmail.com`（例。日本リージョン・JPY 請求） |
+| Billing path | Google One app + `module_521.apk` (BillingClient 5.x) |
+| Account | `example@gmail.com` (placeholder; Japan region / JPY billing) |
 
-## 開始時の状態
+## Initial State
 
-- Play サブスク: **学生プラン `g1.play.2tb.ai.student`** 有効（￥720/月、次回 2026-12-18）
-- `--list --plan pro12` で Pro 5TB の offer が 4 種見えている:
+- Play subscription: **Student plan `g1.play.2tb.ai.student`** active (¥720/mo, next payment 2026-12-18)
+- `--list --plan pro12` returned 4 free trial offers for Pro 5TB:
 
 ```
-offer 12months-eft        → 0 micros, P1Y
-offer 6months-eft         → 0 micros, P6M
-offer 6months-eft-2       → 0 micros, P6M
-offer 6months-eft-ss-2026 → 0 micros, P6M
-offer null                → 2,900,000,000 micros, P1M   （通常価格 ¥2,900）
+offer 12months-eft        -> 0 micros, P1Y
+offer 6months-eft         -> 0 micros, P6M
+offer 6months-eft-2       -> 0 micros, P6M
+offer 6months-eft-ss-2026 -> 0 micros, P6M
+offer null                -> 2,900,000,000 micros, P1M   (standard price ¥2,900)
 ```
 
-## 実行結果
+## Execution Results
 
-| 日時 | 操作 | offer | `subs_valid_until_time` |
+| Timestamp | Action | Offer | `subs_valid_until_time` |
 |---|---|---|---|
-| 2026-11-19 02:34 | step1（`--plan pro12`） | `12months-eft` | 2027-11-19 |
-| 2026-11-19 02:38 | step2（`--stack --plan pro6`） | `6months-eft` | 2028-05-19（546 日） |
-| 2026-11-19 02:41 | step3（`--stack --plan pro6b`） | `6months-eft-2` | **2028-11-19（730 日）** |
-| 2026-11-19 02:45〜 | step4（`--stack --plan pro6c`） | `6months-eft-ss-2026` | 変化なし（Play が即エラー） |
+| 2026-11-19 02:34 | step1 (`--plan pro12`) | `12months-eft` | 2027-11-19 |
+| 2026-11-19 02:38 | step2 (`--stack --plan pro6`) | `6months-eft` | 2028-05-19 (546 days) |
+| 2026-11-19 02:41 | step3 (`--stack --plan pro6b`) | `6months-eft-2` | **2028-11-19 (730 days)** |
+| 2026-11-19 02:45+ | step4 (`--stack --plan pro6c`) | `6months-eft-ss-2026` | Unchanged (immediate Play error) |
 
-購入ごとに `purchaseToken` が更新される（`library.db` の `ownership` テーブル）。
+Each purchase rotates the `purchaseToken` in Play's `library.db` (`ownership` table).
 
-> `purchaseToken` は購入情報に紐づく機密値のため、この文書には記載しません。
-> 手元で確認する場合は Play の `library.db` を直接参照してください（取り扱いに注意）。
+> Because `purchaseToken` is sensitive credential data tied to the purchase, it is omitted from this document.
+> Inspect Play's `library.db` locally if needed and handle it with care.
 
-## 最終状態
+## Final State
 
 `library.db`:
 
 ```
 subs:com.google.android.apps.subscriptions.red:g1.2tb.ai.subs_variant
   valid_until: 2028-11-19
-  残り日数: 730
+  days_remaining: 730
 ```
 
-Play の定期購入画面:
+Google Play Subscriptions screen:
 
 ```
-有効
+Active
 Google One
 Google AI Pro (5 TB)
-次回のお支払い: ￥2,900（2028/11/19）
+Next payment: ¥2,900 (2028/11/19)
 ```
 
-再起動後も同じ状態であることを確認済み（サーバー側で保持）。
+Confirmed persistent across device reboot (stored server-side).
 
-## 2026-11-25 追加調査: Ultra 系 tier と割引オファーの有無
+## 2026-11-25 Follow-Up: Probing Ultra Tiers and Discount Offers
 
-iOS 向けプロジェクト（`crhywun/g1-acq`）が扱っていた SKU 名を取り込み、候補を
-132 件から 287 件に増やして再スキャンした。
+Candidate SKUs were expanded from 132 to 287 using SKU names referenced by the iOS project (`crhywun/g1-acq`) and rescanned live:
 
-| 項目 | 値 |
+| Metric | Value |
 |---|---|
-| 候補 | 7 tier × 41（1 variant + 8 期間 × 5 suffix）= 287 件 |
-| tier | `2tb.ai`, `play.2tb.ai`, `5tb.ai`, `ai.pro`, `20tb`, `play.20tb`, `ai.ultra` |
-| suffix | `_eft`, `_ip_90p`, `_ip_90p.acq`, `_ip_95p.acq`, `_ip_75p.acq` |
-| 実行時間 | 36.6 秒（バッチ 20 件・タイムアウト 20 秒、タイムアウト 0 件） |
+| Candidates | 7 tiers x 41 (1 variant + 8 periods x 5 suffixes) = 287 |
+| Tiers | `2tb.ai`, `play.2tb.ai`, `5tb.ai`, `ai.pro`, `20tb`, `play.20tb`, `ai.ultra` |
+| Suffixes | `_eft`, `_ip_90p`, `_ip_90p.acq`, `_ip_95p.acq`, `_ip_75p.acq` |
+| Duration | 36.6s (batch size 20, timeout 20s, 0 timeouts) |
 
-結果は、`g1.2tb.ai` 系の 8 SKU だけが出現し、
-Ultra 系（`20tb` / `play.20tb` / `ai.ultra`）と割引系（`_ip_90p` / `_ip_95p.acq` /
-`_ip_75p.acq`）は 0 件だった。
+Only the 8 `g1.2tb.ai` SKUs appeared; Ultra tiers (`20tb` / `play.20tb` / `ai.ultra`) and discount suffixes (`_ip_90p` / `_ip_95p.acq` / `_ip_75p.acq`) returned 0 results.
 
-照会経路そのものが死んでいないことは、次の 2 点で確認した。
+Two control checks confirmed the query path itself was healthy:
 
-- 対照実験: 同じ実行で正常な `g1.2tb.ai.18months_eft` を指定すると
-  `eft-18months`（P1Y6M・0 micros）が返った
-- 個別確認: `g1.30tb`（文法に乗らない裸の SKU）、`g1.20tb`、`g1.ai.ultra` を
-  直接指定しても 0 件だった
+- Positive control: in the same run, querying `g1.2tb.ai.18months_eft` returned `eft-18months` (`P1Y6M`, `0 micros`).
+- Direct queries: querying bare `g1.30tb`, `g1.20tb`, and `g1.ai.ultra` directly also returned 0 results.
 
-このアカウント（日本リージョン）では Pro 5TB の `g1.2tb.ai` だけが提供されており、
-Ultra 系と割引オファーは Play から返らない。
+On this Japan-region account, Play only returns Pro 5TB (`g1.2tb.ai`); Ultra tiers and discount offers are absent.
 
-## 2026-11-25 追記: g1-acq v7.6.0 の Ultra 1ヶ月無料トライアル検証
+## 2026-11-25 Addendum: Testing `g1-acq` v7.6.0 Ultra 1-Month Free Trial SKUs
 
-iOS 側プロジェクトが v7.6.0（2026-11-24）で Ultra の対象を
-3ヶ月 90%オフから **1ヶ月無料トライアル**へ変更した。新しい SKU は
-`g1.20tb.1month_eft.acq` と `g1.ai.ultra.1month_eft.acq` で、
-`suffix` に `_eft.acq` を足して候補を 343 件に増やし、実機で確認した。
+On 2026-11-24, `g1-acq` v7.6.0 switched Ultra targets from 3-month 90%-off to **1-month free trials** (`g1.20tb.1month_eft.acq` and `g1.ai.ultra.1month_eft.acq`). Adding `_eft.acq` expanded candidates to 343 and was re-tested on-device:
 
-| 確認した SKU | 結果 |
+| Queried SKU | Result |
 |---|---|
-| `g1.20tb.1month_eft.acq` | 0 件 |
-| `g1.ai.ultra.1month_eft.acq` | 0 件 |
-| `g1.20tb.1month_eft` | 0 件 |
-| `g1.ai.ultra.1month_eft` | 0 件 |
-| `g1.20tb.3months_ip_90p.acq` | 0 件 |
-| `g1.ai.ultra.3months_ip_90p.acq` | 0 件 |
+| `g1.20tb.1month_eft.acq` | 0 hits |
+| `g1.ai.ultra.1month_eft.acq` | 0 hits |
+| `g1.20tb.1month_eft` | 0 hits |
+| `g1.ai.ultra.1month_eft` | 0 hits |
+| `g1.20tb.3months_ip_90p.acq` | 0 hits |
+| `g1.ai.ultra.3months_ip_90p.acq` | 0 hits |
 
-全体スキャン（343 件・46 秒・タイムアウト 0 件）でも、出現したのは
-`g1.2tb.ai` 系の 8 SKU だけだった。同じ実行で `g1.2tb.ai.18months_eft` は
-`eft-18months` を返しているため、照会経路は正常である。
+Across the full 343-SKU scan (46s, 0 timeouts), only the 8 `g1.2tb.ai` SKUs returned offers, while `g1.2tb.ai.18months_eft` returned `eft-18months` in the same run.
 
-つまり、このアカウント（日本リージョン）の Play には Ultra 系 SKU が存在しない。
-g1-acq 側でも issue #2（Apple の收銀台で "Unable to Complete Purchase"）と
-issue #1（Google アプリが原価のまま）が未解決のままで、購入成功の報告は確認できていない。
+Play on this Japan-region account does not expose Ultra SKUs. Upstream in `g1-acq`, issue #2 (Apple checkout `"Unable to Complete Purchase"`) and issue #1 (Google app showing full price) remain open with no confirmed successful purchase.
 
-## 観測された注意点
+## Side Effects Observed
 
-- Frida 注入を繰り返すと Pixel 7a がブートループに入ることがあった
-  （電源長押しで復帰、サブスクは無事）
-- USB 接続が数回ドロップ（ハブ経由）。Wi-Fi ADB 併用で安定
-- 4 回目（`-ss-2026`）だけ Play がシートを出さず「エラーが発生しました」ダイアログを表示
+- Repeated Frida injections caused Pixel 7a to enter a boot loop a few times (power-button hold recovered; subscription unaffected).
+- USB dropped periodically through hubs; Wi-Fi ADB stabilized the session.
+- Only the 4th stack (`-ss-2026`) failed without a checkout sheet, showing a Play "Something went wrong" error dialog instead.
 
-## スクリーンショット（本人ポスト）
+## Screenshots (Author's Posts)
 
 - <https://x.com/lvz3s/status/2123112734460170354>
 - <https://x.com/lvz3s/status/2123109098443121001>
 
-![Play の定期購入画面](../images/result-subscription.jpg)
+![Google Play Subscriptions Screen](../images/result-subscription.jpg)
 
-![結果サマリ](../images/result-summary.jpg)
+![Result Summary](../images/result-summary.jpg)

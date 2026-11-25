@@ -1,7 +1,7 @@
-"""sku_scanner_core.py —— 読み取り専用 SKU スキャナの純粋ロジック。
+"""sku_scanner_core.py -- Pure logic for the read-only Play SKU scanner.
 
-frida / adb / ネットワークに依存しない。offer イベントからは許可リストの
-5 項目だけを取り出し、トークンやアカウント情報は一切保持しない。
+Has zero dependency on frida, adb, or the network. Extracts only the five
+allowlisted fields from offer events and strips tokens and account metadata.
 """
 
 from __future__ import annotations
@@ -12,10 +12,9 @@ from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 
 G1_PREFIX = "g1"
-# Ultra 系 tier（20tb / play.20tb / ai.ultra）は iOS プロジェクト
-# https://github.com/crhywun/g1-acq が扱う product id 由来の知識で、
-# 実機での存在は未検証。ドットを含まないため parse_sku では
-# 期間トークン経路（_PERIOD_TOKEN_RE）で分解される。
+# Ultra-family tiers (20tb / play.20tb / ai.ultra) are adapted from iOS product IDs
+# tracked in https://github.com/crhywun/g1-acq and are unverified on Play Store;
+# dotless tiers are split by _PERIOD_TOKEN_RE inside parse_sku().
 DEFAULT_TIERS = ("2tb.ai", "play.2tb.ai", "5tb.ai", "ai.pro", "20tb", "play.20tb", "ai.ultra")
 DEFAULT_PERIODS = (
     "1month",
@@ -37,7 +36,7 @@ DEFAULT_SUFFIXES = (
 )
 VARIANT_SUFFIX = ".subs_variant"
 
-# 出力・入力の両方で使うフィールドの許可リスト（ここに無い鍵は保存しない）。
+# Allowlist for serialized input/output fields (any other keys are discarded).
 ROW_FIELDS = ("sku", "offer_id", "period", "micros", "title")
 
 _PERIOD_RE = re.compile(r"(\d+)(months?)")
@@ -53,29 +52,29 @@ _UNKNOWN_PERIOD_MONTHS = 10**6
 
 
 def validate_period(period: str) -> str:
-    """期間表記を正規化する（1 は単数形、それ以外は複数形）。"""
+    """Normalize period strings (singular for 1month, plural otherwise)."""
     if not isinstance(period, str):
-        raise ValueError(f"period は文字列で指定してください: {period!r}")
+        raise ValueError(f"period must be a string: {period!r}")
     match = _PERIOD_RE.fullmatch(period.strip())
     if match is None or int(match.group(1)) < 1:
-        raise ValueError(f"不正な period です: {period!r}")
+        raise ValueError(f"Invalid period: {period!r}")
     months = int(match.group(1))
     return "1month" if months == 1 else f"{months}months"
 
 
 def build_sku(tier: str, period: str, suffix: str) -> str:
-    """tier / period / suffix から g1 の SKU を組み立てる。"""
+    """Assemble a g1 SKU from tier, period, and suffix."""
     if not isinstance(tier, str) or _TIER_RE.fullmatch(tier or "") is None:
-        raise ValueError(f"不正な tier です: {tier!r}")
+        raise ValueError(f"Invalid tier: {tier!r}")
     if not isinstance(suffix, str) or _SUFFIX_RE.fullmatch(suffix or "") is None:
-        raise ValueError(f"不正な suffix です: {suffix!r}")
+        raise ValueError(f"Invalid suffix: {suffix!r}")
     if period:
         return f"{G1_PREFIX}.{tier}.{validate_period(period)}{suffix}"
     return f"{G1_PREFIX}.{tier}{suffix}"
 
 
 def _split_sku_tail(tier: str, tail: str) -> Optional[tuple]:
-    """tier より後の文字列を (tier, period, suffix) に分ける。"""
+    """Split substring after tier into (tier, period, suffix)."""
     match = _SKU_TAIL_RE.fullmatch(tail)
     if match is not None:
         return (tier, match.group(1), match.group(2))
@@ -85,10 +84,10 @@ def _split_sku_tail(tier: str, tail: str) -> Optional[tuple]:
 
 
 def parse_sku(sku: str) -> Optional[tuple]:
-    """SKU を (tier, period, suffix) に分解する。不正なら None。
+    """Parse an SKU into (tier, period, suffix), or None if invalid.
 
-    ドットを含む tier（例: 2tb.ai）を誤って切らないよう、既知 tier を
-    長い順に試してから、期間トークン／変種サフィックスで分割する。
+    Matches longer known tiers first so dotted tiers (e.g. 2tb.ai) stay intact,
+    then falls back to period-token and variant-suffix matching.
     """
     if not isinstance(sku, str):
         return None
@@ -104,7 +103,7 @@ def parse_sku(sku: str) -> Optional[tuple]:
             if parsed is not None:
                 return parsed
 
-    # 既知 tier に無い値でも、期間トークンがあれば分解できる。
+    # Support unlisted tiers when a period token is present.
     match = _PERIOD_TOKEN_RE.search(body)
     if match is not None:
         tier = body[: match.start()]
@@ -124,7 +123,7 @@ def generate_candidates(
     include_variants: bool = True,
     limit: Optional[int] = None,
 ) -> list:
-    """Unit + period + suffix の組み合わせを重複なく決定的に生成する。"""
+    """Deterministically generate unique tier + period + suffix SKU combinations."""
     for period in periods:
         validate_period(period)
     normalized_periods = [validate_period(period) for period in periods]
@@ -149,7 +148,7 @@ def generate_candidates(
 
 @dataclass
 class OfferRow:
-    """offer イベントから抽出した、出力可能な項目だけを持つ行。"""
+    """Sanitized offer row extracted from an agent offer event."""
 
     sku: str
     offer_id: str
@@ -159,7 +158,7 @@ class OfferRow:
 
 
 def _coerce_micros(value: object) -> Optional[int]:
-    """整数または数値文字列だけを int にする。その他は「不明」として None。"""
+    """Parse integer or numeric string micros; return None when unknown."""
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
@@ -170,7 +169,7 @@ def _coerce_micros(value: object) -> Optional[int]:
 
 
 def parse_offer_events(events: Iterable[object]) -> list:
-    """offer イベントだけを OfferRow に変換する（Raw / Frida envelope 両対応）。"""
+    """Convert raw events or Frida envelopes into OfferRow entries (ignores non-offer events)."""
     rows: list = []
     for event in events:
         payload = event
@@ -195,7 +194,7 @@ def parse_offer_events(events: Iterable[object]) -> list:
 
 
 def dedupe_rows(rows: Iterable[OfferRow]) -> list:
-    """同一 SKU + offerId の行は最初のものだけ残す。"""
+    """Keep only the first OfferRow per (sku, offer_id) pair."""
     seen = set()
     unique: list = []
     for row in rows:
@@ -208,7 +207,7 @@ def dedupe_rows(rows: Iterable[OfferRow]) -> list:
 
 
 def period_months(period: str) -> int:
-    """P1M / P1Y を月数にする。未知の表記は末尾に回すため大きい値を返す。"""
+    """Convert P1M / P1Y strings to month counts; unknown formats sort last."""
     if isinstance(period, str):
         match = _MONTH_RE.fullmatch(period)
         if match is not None:
@@ -220,7 +219,7 @@ def period_months(period: str) -> int:
 
 
 def sort_rows(rows: Iterable[OfferRow]) -> list:
-    """SKU → 期間 → offerId の順に安定ソートする。"""
+    """Stable sort by sku -> billing period -> offer_id."""
     return sorted(
         rows,
         key=lambda row: (row.sku, period_months(row.period), row.offer_id or ""),
@@ -229,43 +228,42 @@ def sort_rows(rows: Iterable[OfferRow]) -> list:
 
 def _table_footer() -> list:
     return [
-        "注: micros=0 は初回（最初の請求段階）の価格を示すだけであり、"
-        "トライアル適格性や更新価格を証明するものではありません。",
-        "注: 本結果は読み取り専用スキャンの参考値です。実際の請求額は Play の定期購入画面で確認してください。",
+        "Note: micros=0 only indicates the price of the first billing phase; "
+        "it does not guarantee trial eligibility or renewal pricing.",
+        "Note: Read-only scan results are informational only; verify actual charges on Google Play.",
     ]
 
 
 def format_table(rows: Iterable[OfferRow], limit: int = 20) -> list:
-    """人が読む表（ヘッダ + 行 + 注意書き）を返す。"""
+    """Render a Markdown-style table of offers with safety notes."""
     ordered = sort_rows(rows)
     lines = [
-        "SKU | offerId | 期間 | micros | タイトル",
+        "SKU | offerId | Period | micros | Title",
         "--- | --- | --- | ---: | ---",
     ]
     if not ordered:
-        lines.append("該当する offer はありませんでした（読み取り専用スキャン）。")
+        lines.append("No matching offers found (read-only scan).")
         lines.extend(_table_footer())
         return lines
 
     shown = ordered[:limit] if limit is not None else ordered
     for row in shown:
-        micros = "不明" if row.micros is None else f"{row.micros:,}"
+        micros = "unknown" if row.micros is None else f"{row.micros:,}"
         lines.append(
             f"{row.sku} | {row.offer_id} | {row.period or '-'} | "
             f"{micros} | {row.title or '-'}"
         )
     if limit is not None and len(ordered) > limit:
-        # --limit は「候補数」の上限で、表の行数とは別物。混同させないため
-        # フラグ名には触れず、省略件数だけを伝える。
+        # --limit caps generated candidates, not display rows; avoid mentioning --limit here.
         lines.append(
-            f"… 他 {len(ordered) - limit} 件は表示していません（先頭 {limit} 件のみ表示）。"
+            f"... {len(ordered) - limit} more row(s) omitted (showing first {limit})."
         )
     lines.extend(_table_footer())
     return lines
 
 
 def to_json(rows: Iterable[OfferRow], indent: int = 2) -> str:
-    """許可リストのみの JSON レポートを返す（日本語はエスケープしない）。"""
+    """Serialize allowlisted OfferRow fields to JSON (preserving Unicode)."""
     payload = [
         {field: getattr(row, field) for field in ROW_FIELDS}
         for row in sort_rows(rows)
@@ -274,38 +272,38 @@ def to_json(rows: Iterable[OfferRow], indent: int = 2) -> str:
 
 
 def parse_report(payload: str) -> list:
-    """保存済み JSON レポートを検証して OfferRow の列表に戻す。"""
+    """Validate and parse a saved JSON report back into OfferRow instances."""
     if isinstance(payload, bytes):
         try:
             payload = payload.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise ValueError("レポートは UTF-8 テキストである必要があります") from exc
+            raise ValueError("Report must be valid UTF-8 text") from exc
     if not isinstance(payload, str):
-        raise ValueError("レポートは JSON 文字列である必要があります")
+        raise ValueError("Report must be a JSON string")
     try:
         data = json.loads(payload)
     except (ValueError, TypeError) as exc:
-        raise ValueError(f"レポートの JSON を解析できません: {exc}") from exc
+        raise ValueError(f"Could not parse report JSON: {exc}") from exc
     if not isinstance(data, list):
-        raise ValueError("レポートは OfferRow の配列である必要があります")
+        raise ValueError("Report must be a JSON array of OfferRow objects")
 
     allowed = set(ROW_FIELDS)
     rows: list = []
     for index, item in enumerate(data):
         if not isinstance(item, dict):
-            raise ValueError(f"レポート[{index}] はオブジェクトである必要があります")
+            raise ValueError(f"report[{index}] must be an object")
         if set(item) != allowed:
             raise ValueError(
-                f"レポート[{index}] の項目が不正です: {sorted(set(item) ^ allowed)}"
+                f"report[{index}] has unexpected/missing keys: {sorted(set(item) ^ allowed)}"
             )
         if not all(isinstance(item[key], str) for key in ("sku", "offer_id", "period")):
-            raise ValueError(f"レポート[{index}] の sku / offer_id / period は文字列である必要があります")
+            raise ValueError(f"report[{index}] sku / offer_id / period must be strings")
         micros = item["micros"]
         if micros is not None and (isinstance(micros, bool) or not isinstance(micros, int)):
-            raise ValueError(f"レポート[{index}] の micros は整数または null である必要があります")
+            raise ValueError(f"report[{index}] micros must be an integer or null")
         title = item["title"]
         if title is not None and not isinstance(title, str):
-            raise ValueError(f"レポート[{index}] の title は文字列または null である必要があります")
+            raise ValueError(f"report[{index}] title must be a string or null")
         rows.append(
             OfferRow(
                 sku=item["sku"],

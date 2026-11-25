@@ -1,8 +1,8 @@
-"""iOS プロジェクト（g1-acq）由来の SKU カタログ知識の取り込みを検証する。
+"""Tests verifying SKU catalog entries imported from the iOS g1-acq project.
 
-Ultra 系 tier（20tb / play.20tb / ai.ultra）と獲得向けサフィックス
-（_ip_75p.acq）が候補生成と SKU 分解の両方に効いていることを確認する。
-device / frida / network は使用しない。
+Confirms Ultra tiers (20tb / play.20tb / ai.ultra) and acquisition suffixes
+(_ip_75p.acq) participate in both candidate generation and SKU parsing.
+Uses no device, frida, or network.
 """
 
 import sys
@@ -15,7 +15,7 @@ import sku_scanner_core
 
 
 class CatalogConstantTests(unittest.TestCase):
-    """既定カタログの内容と順序（並びは生成順・docs の記述順に直結する）。"""
+    """Default catalog values and ordering (coupled to generation order and docs)."""
 
     def test_default_tiers_keep_existing_four_then_append_ultra_family(self):
         self.assertEqual(
@@ -38,7 +38,7 @@ class CatalogConstantTests(unittest.TestCase):
         )
 
     def test_default_periods_are_unchanged(self):
-        # 期間は今回の変更対象ではない。取り込みで崩れていないことを固定する。
+        # Periods must remain unchanged across catalog updates.
         self.assertEqual(
             sku_scanner_core.DEFAULT_PERIODS,
             (
@@ -55,7 +55,7 @@ class CatalogConstantTests(unittest.TestCase):
 
 
 class CandidateCountTests(unittest.TestCase):
-    """7 tier x (1 variant + 8 period x 5 suffix) = 343 を固定する。"""
+    """Verify 7 tiers x (1 variant + 8 periods x 6 suffixes) = 343 candidates."""
 
     def test_candidate_count_is_343(self):
         self.assertEqual(len(sku_scanner_core.generate_candidates()), 343)
@@ -75,7 +75,7 @@ class CandidateCountTests(unittest.TestCase):
 
 
 class ParseSkuExpansionTests(unittest.TestCase):
-    """ドットを含まない Ultra tier でも期間トークン経路で分解できること。"""
+    """Dotless Ultra tiers must parse via the period-token path."""
 
     def test_parse_sku_handles_period_suffix_for_new_tiers(self):
         cases = (

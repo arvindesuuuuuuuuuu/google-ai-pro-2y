@@ -1,7 +1,7 @@
-"""RealExecutor の JS 組み立て（純粋部分）のテスト。
+"""Tests for pure JS assembly inside RealExecutor.
 
-ultra0-17.py を importlib で読むだけで、frida にも端末にも触れない。
-支払いの確定・UI タップに相当するコードが注入 JS に混ざらないことを固定する。
+Loads ultra0-17.py via importlib without touching frida or a real device, and
+locks down the invariant that payment confirmation / UI tap calls never enter JS.
 """
 
 import json
@@ -39,7 +39,7 @@ class BuildJsTests(unittest.TestCase):
         self.assertNotIn("frida", sys.modules)
 
     def test_build_js_never_enables_list_only(self):
-        """LIST_ONLY が入ると課金画面が開かず、run が必ず失敗する。"""
+        """Enabling LIST_ONLY prevents checkout from opening, so `run` must reject it."""
         js = self.executor.build_js(ACTION)
 
         self.assertNotIn(combo.LIST_ONLY_LITERAL, js)

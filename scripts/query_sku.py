@@ -1,6 +1,6 @@
-"""query_sku.py —— 查指定商品 ID 的所有 offer
+"""query_sku.py -- Query all offers for specified product IDs.
 
-用法: python query_sku.py g1.2tb.ai.subs_variant [其它SKU...]
+Usage: python query_sku.py g1.2tb.ai.subs_variant [other_skus...]
 """
 import json
 import sys
@@ -21,7 +21,7 @@ def main():
             pid = p.pid
             break
     if not pid:
-        raise SystemExit("没找到 Google One 进程")
+        raise SystemExit("Google One process not found")
 
     js = ultra0.build_js("5x", True)
     js = js.replace('var PRODUCTS=["g1.play.20tb"];', 'var PRODUCTS=' + json.dumps(skus) + ';', 1)
@@ -46,10 +46,10 @@ def main():
 
     print(f"\n=== {', '.join(skus)} ===")
     if not offers:
-        print("  （没有任何 offer 返回）")
+        print("  (no offers returned)")
     for o in offers:
         micros = str(o.get("micros"))
-        price = "免费" if micros == "0" else f"${int(micros)/1_000_000:.2f}"
+        price = "free" if micros == "0" else f"${int(micros)/1_000_000:.2f}"
         print(f"  offerId={str(o.get('id')):22s} {price:>9s}  {o.get('period')}   [{o.get('title') or o.get('name') or ''}]")
         if micros == "0":
             print(f"      token={o.get('token')}")

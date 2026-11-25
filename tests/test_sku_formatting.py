@@ -1,4 +1,4 @@
-"""並び順・テーブル・JSON レポートの整形に関する振る舞いテスト。"""
+"""Behavior tests for sorting, Markdown table rendering, and JSON serialization."""
 
 import dataclasses
 import json
@@ -48,9 +48,9 @@ class RowFormattingTests(unittest.TestCase):
 
     def test_format_table_labels_zero_and_non_numeric_micros_and_handles_empty(self):
         rows = [
-            _row(offer_id="zero", micros=0, title="無料"),
-            _row(offer_id="unknown", micros=None, title="不明"),
-            _row(offer_id="priced", micros=990000, title="通常"),
+            _row(offer_id="zero", micros=0, title="Free"),
+            _row(offer_id="unknown", micros=None, title="Unknown"),
+            _row(offer_id="priced", micros=990000, title="Standard"),
         ]
         lines = sku_scanner_core.format_table(rows, limit=20)
         self.assertTrue(all(isinstance(line, str) for line in lines))
@@ -61,18 +61,18 @@ class RowFormattingTests(unittest.TestCase):
         self.assertTrue(any("micros" in line.lower() and "0" in line for line in lines))
         self.assertTrue(
             any(
-                any(word in line.lower() for word in ("eligib", "renew", "適格", "更新"))
+                any(word in line.lower() for word in ("eligib", "renew"))
                 for line in lines
             ),
-            "micros=0 が初回価格のみで適格性・更新価格を証明しない旨の注記が必要",
+            "Table footer must warn that micros=0 does not guarantee eligibility or renewal pricing",
         )
 
         empty_lines = sku_scanner_core.format_table([])
         self.assertTrue(empty_lines)
         self.assertTrue(all(isinstance(line, str) for line in empty_lines))
         self.assertTrue(
-            any(re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", line) for line in empty_lines),
-            "0 件時は日本語の安全なメッセージを返すこと",
+            any("no matching offers" in line.lower() for line in empty_lines),
+            "Empty table must include a clear English empty-state message",
         )
 
     def test_format_table_reports_number_of_omitted_rows_over_limit(self):
@@ -89,14 +89,14 @@ class RowFormattingTests(unittest.TestCase):
 
     def test_to_json_round_trip_uses_allowlisted_keys_and_no_tokens(self):
         rows = [
-            _row(offer_id="b", period="P2Y", micros=100, title="二年プラン"),
-            _row(offer_id="a", period="P1M", micros=0, title="プランA（税込）"),
+            _row(offer_id="b", period="P2Y", micros=100, title="Two-Year Plan"),
+            _row(offer_id="a", period="P1M", micros=0, title="Plan A (tax included)"),
         ]
         text = sku_scanner_core.to_json(rows, indent=2)
 
         self.assertIsInstance(text, str)
         self.assertNotIn("token", text.lower())
-        self.assertIn("プランA（税込）", text)
+        self.assertIn("Plan A (tax included)", text)
 
         data = json.loads(text)
         self.assertIsInstance(data, list)

@@ -1,8 +1,9 @@
-"""combo_core.py —— 無料オファー積み上げ（コンボ）プランの純粋ロジック。
+"""combo_core.py -- Pure planning logic for stacking free Google AI Pro offers.
 
-frida / adb / ネットワークに一切依存しない。デバイスから読んだ所有行と
-offer 一覧を受け取り、「今どの状態か」「何をどの順で実行するか」だけを決める。
-支払いの確定はこのモジュールの責務ではない（人が行う）。
+Has zero dependency on frida, adb, or the network. Takes ownership rows and an
+offer list read from a device, classifies the current subscription state, and
+decides which actions to execute in what order. Payment confirmation is never
+handled here (the operator performs checkout manually).
 """
 
 from __future__ import annotations
@@ -14,16 +15,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Optional, Sequence
 
-# library.db の doc_id は `subs:com.google.android.apps.subscriptions.red:<sku>`。
-# `subs:` を要求するのは、同じパッケージの買い切り（inapp:...）を
-# サブスク行と誤認しないため。
+# library.db doc_id format: `subs:com.google.android.apps.subscriptions.red:<sku>`.
+# Requiring `subs:` prevents one-time `inapp:...` rows from being misread as subscriptions.
 SUBSCRIPTION_PREFIX = "subs:"
 SUBSCRIPTION_MARKER = "subscriptions.red:"
-# 積み上げ用オファーを持つ SKU の末尾。
+# SKU suffix carrying stackable free offers.
 STACK_SKU_SUFFIX = ".subs_variant"
-# subs_variant の通常プラン（無料ではない）を表す offerId。
+# offerId representing the regular paid base plan on subs_variant.
 BASE_OFFER_ID = "null"
-# 新規登録に使う単体オファーの SKU 末尾。
+# Standalone offer SKU suffix used for fresh signups.
 NEW_SUBSCRIPTION_SUFFIX = "_eft"
 
 STATE_FRESH = "fresh"
@@ -43,7 +43,7 @@ def _now_ms() -> int:
 
 
 def _coerce_ms(value: object) -> Optional[int]:
-    """epoch ミリ秒として読める値だけ int にする。不明は None（推測しない）。"""
+    """Convert valid epoch millisecond values to int; return None when unknown."""
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
@@ -57,7 +57,7 @@ def _coerce_ms(value: object) -> Optional[int]:
 
 @dataclass
 class SubscriptionState:
-    """library.db の所有行 1 件に対応するサブスク状態。"""
+    """Subscription state parsed from one ownership row in library.db."""
 
     sku: str
     valid_until_ms: Optional[int]
@@ -68,12 +68,12 @@ class SubscriptionState:
 def parse_ownership_rows(
     rows: Iterable[object], now_ms: Optional[int] = None
 ) -> list:
-    """ownership の行からサブスク行だけを取り出す。
+    """Extract subscription rows from ownership tuples.
 
-    rows は `(doc_id, account, subs_valid_until_time)` のタプル列。
-    サブスク行は `subs:com.google.android.apps.subscriptions.red:<sku>` の形で、
-    SKU は最後の `:` より後ろ。壊れた行は例外にせず読み飛ばす
-    （読めない行 1 件で全体を止めない）。
+    rows is an iterable of `(doc_id, account, subs_valid_until_time)`.
+    Subscription rows follow `subs:com.google.android.apps.subscriptions.red:<sku>`,
+    where the SKU is everything after the final `:`. Malformed rows are skipped
+    without raising so one corrupt row does not halt the run.
     """
     now = _now_ms() if now_ms is None else int(now_ms)
     states: list = []
@@ -104,7 +104,7 @@ def parse_ownership_rows(
 
 
 def latest_end_ms(states: Sequence[SubscriptionState]) -> Optional[int]:
-    """有効な状態のうち最も遅い期限。有効な行が無ければ None。"""
+    """Return the latest expiration timestamp across active rows, or None."""
     ends = [
         state.valid_until_ms
         for state in states
@@ -116,7 +116,7 @@ def latest_end_ms(states: Sequence[SubscriptionState]) -> Optional[int]:
 def classify_state(
     states: Sequence[SubscriptionState], now_ms: Optional[int] = None
 ) -> str:
-    """fresh（サブスク行なし）/ active（1 件以上有効）/ expired（全部期限切れ）。"""
+    """Return fresh (no sub rows), active (>=1 active row), or expired (all ended)."""
     now = _now_ms() if now_ms is None else int(now_ms)
     if not states:
         return STATE_FRESH
@@ -130,7 +130,7 @@ def classify_state(
 
 @dataclass
 class ComboAction:
-    """1 ステップ分の実行内容。expected_end_ms はカレンダー加算の見込み値。"""
+    """Single planned execution step with calendar-estimated expected_end_ms."""
 
     kind: str
     sku: str
@@ -141,7 +141,7 @@ class ComboAction:
 
 
 def months_from_period(period: object) -> int:
-    """Play の billingPeriod（P1Y6M など）を月数にする。不明は 0。"""
+    """Convert Play ISO billingPeriod (e.g. P1Y6M) to integer months; 0 if unknown."""
     if not isinstance(period, str):
         return 0
     match = _PERIOD_RE.fullmatch(period.strip().upper())
@@ -153,7 +153,7 @@ def months_from_period(period: object) -> int:
 
 
 def add_months_ms(base_ms: int, months: int) -> int:
-    """暦月で加算する（1/31 + 1ヶ月 は 2/28 に丸める）。"""
+    """Add calendar months (clamping day-of-month, e.g. Jan 31 + 1 month -> Feb 28)."""
     moment = datetime.fromtimestamp(int(base_ms) / 1000)
     total = moment.month - 1 + int(months)
     year = moment.year + total // 12
@@ -176,7 +176,7 @@ def _offer_field(offer: object, key: str) -> str:
 
 
 def _is_free(offer: object) -> bool:
-    """micros がちょうど 0 のときだけ無料とみなす（不明は無料扱いしない）。"""
+    """Return True only when micros is explicitly 0 (never treat unknown as free)."""
     if not isinstance(offer, dict):
         return False
     micros = _coerce_ms(offer.get("micros"))
@@ -184,7 +184,7 @@ def _is_free(offer: object) -> bool:
 
 
 def stack_offers(offers: Iterable[object]) -> list:
-    """積み上げに使える無料オファー（subs_variant・無料・期間既知）を月数の降順で返す。"""
+    """Return free stackable subs_variant offers with known durations, longest first."""
     picked: dict = {}
     for offer in offers:
         if not isinstance(offer, dict):
@@ -209,12 +209,12 @@ def stack_offers(offers: Iterable[object]) -> list:
 
 
 def has_stack_offers(offers: Iterable[object]) -> bool:
-    """積み上げ可能な無料オファーが 1 件でもあるか。"""
+    """Return True if at least one stackable free offer exists."""
     return bool(stack_offers(offers))
 
 
 def new_subscription_offer(offers: Iterable[object]) -> Optional[dict]:
-    """新規登録に使う「期間が最長の無料単体オファー」を返す。"""
+    """Return the longest free standalone offer suitable for a new subscription."""
     candidates = []
     for offer in offers:
         if not isinstance(offer, dict):
@@ -240,18 +240,18 @@ def new_subscription_offer(offers: Iterable[object]) -> Optional[dict]:
 def stack_is_possible(
     state_class: str, has_stack_offers: bool, auto_renew: bool
 ) -> tuple:
-    """積み上げ可否と、その理由（日本語 1 文）を返す。"""
+    """Return (eligible, single-sentence explanation)."""
     if state_class == STATE_FRESH:
-        return True, "新規登録として最長の無料オファーから開始できます"
+        return True, "No active subscription; eligible to start a new subscription with the longest free offer"
     if state_class == STATE_EXPIRED:
-        return True, "期限切れのため新規登録として扱えます"
+        return True, "Expired subscription; eligible to start as a new subscription"
     if state_class == STATE_ACTIVE:
         if not has_stack_offers:
-            return False, "積み上げ可能な無料オファーが見つかりません"
+            return False, "No stackable free offers found"
         if not auto_renew:
-            return False, "自動更新がオフのため積み上げできません（先に解約しないこと）"
-        return True, "有効なサブスクがあるため積み上げ可能"
-    raise ValueError(f"不明な状態です: {state_class!r}")
+            return False, "Auto-renew is off; cannot stack (do not cancel before stacking)"
+        return True, "Active subscription found; stacking is eligible"
+    raise ValueError(f"Unknown subscription state: {state_class!r}")
 
 
 def plan_actions(
@@ -262,16 +262,16 @@ def plan_actions(
     max_steps: Optional[int] = 4,
     base_end_ms: Optional[int] = None,
 ) -> list:
-    """実行するステップ列を組み立てる。
+    """Build the ordered sequence of combo steps.
 
-    - fresh / expired: 最長の無料単体オファーで新規登録し、その後 subs_variant の
-      無料オファーを月数の降順で積み上げる。
-    - active: subs_variant の無料オファーだけを積み上げる。有効なサブスクを
-      置き換える `new_subscription` は絶対に作らない。
-    - base_end_ms を渡すと、その日付から月数を積む（渡さなければ now_ms から）。
+    - fresh / expired: start with the longest standalone free offer, then stack
+      free subs_variant offers in descending month order.
+    - active: stack subs_variant offers only; never emit a new_subscription step
+      that could overwrite an active plan.
+    - base_end_ms: accumulates expected expiration from this timestamp when set.
     """
     if state_class not in STATE_CLASSES:
-        raise ValueError(f"不明な状態です: {state_class!r}")
+        raise ValueError(f"Unknown subscription state: {state_class!r}")
     now = _now_ms() if now_ms is None else int(now_ms)
     steps = 4 if max_steps is None else max(0, int(max_steps))
     if steps == 0:
@@ -314,12 +314,12 @@ def plan_actions(
 def _action_note(kind: str, months: int) -> str:
     if kind == KIND_NEW:
         return (
-            f"新規登録として +{months}ヶ月の無料オファーを使います。"
-            "有効なサブスクがある場合は置き換えになるため実行しません。"
+            f"Starts a new subscription with a +{months}-month free offer. "
+            "Never run while an active subscription exists to avoid replacing it."
         )
     return (
-        f"既存のサブスクに +{months}ヶ月を積み上げます。"
-        "購入前に Play の画面で金額が 0 円であることを確認してください。"
+        f"Stacks +{months} months onto your active subscription. "
+        "Verify the Play checkout sheet displays 0 before confirming."
     )
 
 
@@ -331,12 +331,12 @@ def format_plan(
     auto_renew: bool = True,
     has_stack_offers: Optional[bool] = None,
 ) -> list:
-    """人が読むプラン（日本語の行リスト）を返す。"""
-    lines = ["Google AI Pro 無料オファー コンボプラン", "-" * 40]
+    """Return human-readable plan lines for stdout."""
+    lines = ["Google AI Pro Free-Offer Combo Plan", "-" * 40]
     if latest_end_ms is None:
-        lines.append("現在の有効期限: なし（未加入または期限切れ）")
+        lines.append("Current expiration: None (not subscribed or expired)")
     else:
-        lines.append(f"現在の有効期限: {_format_date(latest_end_ms)}")
+        lines.append(f"Current expiration: {_format_date(latest_end_ms)}")
 
     stack_available = (
         any(action.kind == KIND_STACK for action in actions)
@@ -344,50 +344,49 @@ def format_plan(
         else bool(has_stack_offers)
     )
     possible, verdict = stack_is_possible(state_class, stack_available, auto_renew)
-    lines.append(f"判定: {verdict}")
+    lines.append(f"Verdict: {verdict}")
     if not possible:
-        lines.append("この状態では実行しません（上の判定の条件を満たしてから実行してください）。")
+        lines.append("Will not execute in this state (satisfy the requirement above first).")
 
     if actions:
-        lines.append("実行プラン:")
+        lines.append("Execution plan:")
         for index, action in enumerate(actions, start=1):
-            label = "新規" if action.kind == KIND_NEW else "積み上げ"
+            label = "New" if action.kind == KIND_NEW else "Stack"
             lines.append(
                 f"{index}. [{label}] {action.sku} / {action.offer_id} / "
-                f"+{action.months}ヶ月 → {_format_date(action.expected_end_ms)}"
+                f"+{action.months} months -> {_format_date(action.expected_end_ms)}"
             )
     else:
         lines.append(
-            "実行できる無料オファーが見つかりませんでした"
-            "（読み取り専用スキャンの結果を確認してください）。"
+            "No runnable free offers found "
+            "(inspect the read-only scanner output first)."
         )
 
     lines.extend(
         [
-            "注意: micros=0 は最初の請求段階の価格が 0 であることしか示しません。",
-            "      無料トライアルの適格性や実際の請求額を証明するものではないため、"
-            "実際の請求額と日付は Play の課金画面で必ず確認してください。",
-            "注意: 有効なサブスクがある状態で別 SKU のオファーを買うと、"
-            "積み上げではなく現在のサブスクの置き換えになることがあります。",
-            "注意: 支払いの確定は必ず人が行います（このスクリプトは「登録」を押しません）。",
+            "Note: micros=0 only reflects the price of the initial billing phase.",
+            "      It does not prove free-trial eligibility or future renewal pricing; "
+            "always verify exact charge and dates on the Play checkout sheet.",
+            "Note: Purchasing an offer under a different SKU while subscribed may "
+            "replace your active plan instead of stacking onto it.",
+            "Note: Checkout must be confirmed manually by the operator (this script never taps Subscribe).",
         ]
     )
     return lines
 
 
 # --------------------------------------------------------------------------
-# アカウント単位の判定と「本当に伸びたか」の判定
+# Account scoping & meaningful extension detection
 # --------------------------------------------------------------------------
-#: これ未満の増加は「期限が伸びた」と見なさない（Play が時刻を書き直すことがある）。
+#: Increments below 24h are ignored because Play occasionally rewrites timestamps.
 MIN_EXTENSION_MS = 24 * 60 * 60 * 1000
 
 
 def is_meaningful_extension(before_ms: Optional[int], after_ms: Optional[int]) -> bool:
-    """期限が実質的に伸びたか。
+    """Return True only if expiration grew by at least one full day.
 
-    実機では同じ日のまま数時間だけ値が動くことがあった（Play が所有行を
-    書き直すため）。ミリ秒の僅差を成功と誤判定すると、適用できていないのに
-    「伸びた」と表示してしまうので、1 日以上の増加だけを成功とする。
+    Play Store occasionally shifts subs_valid_until_time by a few hours on the same
+    day; requiring >= 24h avoids mistaking timestamp jitter for a successful stack.
     """
     if after_ms is None:
         return False
@@ -397,7 +396,7 @@ def is_meaningful_extension(before_ms: Optional[int], after_ms: Optional[int]) -
 
 
 def filter_by_account(states: Iterable[object], account: str) -> list:
-    """指定アカウントの行だけに絞る（複数アカウントの混線を防ぐ）。"""
+    """Filter SubscriptionState entries to the specified Google account."""
     target = (account or "").strip().lower()
     if not target:
         return list(states)
@@ -405,7 +404,7 @@ def filter_by_account(states: Iterable[object], account: str) -> list:
 
 
 def distinct_accounts(states: Iterable[object]) -> list:
-    """所有行に現れるアカウントの一覧（重複なし・昇順）。"""
+    """Return sorted unique non-empty account emails present in ownership rows."""
     names = {
         str(getattr(s, "account", "")).strip()
         for s in states
