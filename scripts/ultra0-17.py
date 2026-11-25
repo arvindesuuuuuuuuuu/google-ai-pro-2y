@@ -593,8 +593,9 @@ def build_js(plan: str = "auto", list_only: bool = False, stack: bool = False, o
 
 def run_trial(pid: int, wait=90, plan="auto", list_only=False, stack=False, old_token="", stack_mode=None) -> dict:
     import frida
+    import frida_conn
     step("Injecting billing module to query free trial offers")
-    dev = frida.get_usb_device(timeout=10)
+    dev = frida_conn.connect_device(frida, timeout=10)
     sess = dev.attach(pid)
     res = {"offers": [], "launched": None, "purchase": None, "errors": []}
 

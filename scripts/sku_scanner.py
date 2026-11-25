@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+import frida_conn
 import sku_scanner_core as core
 
 DEFAULT_REPORT_DIR = Path("ultra0-report")
@@ -382,7 +383,7 @@ class FridaSource:
         try:
             import frida  # Imported only when attaching to a device
 
-            self._device = frida.get_usb_device(timeout=self._timeout)
+            self._device = frida_conn.connect_device(frida, timeout=self._timeout)
             self._pid = self._find_pid(self._device)
         except Exception as exc:  # noqa: BLE001
             self._device = None

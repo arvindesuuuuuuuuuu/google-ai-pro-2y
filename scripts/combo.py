@@ -29,6 +29,7 @@ from typing import Callable, Iterable, Optional, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import combo_core as core
+import frida_conn
 
 VENDING_PKG = "com.android.vending"
 LIBRARY_DB = f"/data/data/{VENDING_PKG}/databases/library.db"
@@ -403,7 +404,7 @@ class RealExecutor:
             ) from exc
 
         try:
-            device = frida.get_usb_device(timeout=10)
+            device = frida_conn.connect_device(frida, timeout=10)
             pid = self._find_pid(device)
             session = device.attach(pid)
         except RuntimeError:
